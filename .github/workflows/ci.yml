@@ -3,16 +3,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
-
-concurrency:
-  group: ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  push:
+    branches: [main]
 
 permissions:
   contents: read
-  pull-requests: write
   id-token: write
-  statuses: write   # deploy-staging posts commit statuses to the PR HEAD SHA
 
 jobs:
   build:
@@ -33,81 +29,23 @@ jobs:
         run: go test ./...
         working-directory: src/agent-registry
 
-  # ── Deploy to staging — runs after build green on release-please PRs ───────
+  # ── Deploy to staging — every push to main, gated on build green ───────────
   #
-  # Mirrors the agentic-live-www pattern: only the release-please autorelease
-  # PR triggers a staging deploy, and only on `synchronize` (you push to the
-  # PR, or release-please bumps it). Uses the PR HEAD as the deploy ref, so
-  # registry-uat.agentics.dk reflects exactly what will merge to main.
+  # registry-uat.agentics.dk tracks the tip of main. Coolify's "auto-deploy on
+  # push" should be DISABLED in the Coolify UI so this Actions job is the only
+  # thing redeploying staging. The job is serialized per-branch via concurrency
+  # so back-to-back pushes deploy in order rather than in parallel.
   deploy-staging:
-    if: >-
-      github.event.action == 'synchronize' &&
-      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build]
     runs-on: [self-hosted, devcontainer-runner]
     environment: staging
+    concurrency:
+      group: deploy-staging-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          persist-credentials: false
-
-      - name: Mark PR check pending (deploy-staging)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state=pending \
-            -f context=deploy-staging \
-            -f description="Deploying to staging…" \
-            -f target_url="$RUN_URL"
-
       - uses: pksorensen/pks-cli/.github/actions/coolify-deploy@main
         with:
           app-name: agent-registry
           environment: staging
-
-      - name: Mark PR check success (deploy-staging)
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state=success \
-            -f context=deploy-staging \
-            -f description="Staging deploy succeeded" \
-            -f target_url="$RUN_URL"
-
-      - name: Mark PR check failure (deploy-staging)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state=failure \
-            -f context=deploy-staging \
-            -f description="Staging deploy failed" \
-            -f target_url="$RUN_URL"
-
-      - name: Comment staging result on PR
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          JOB_STATUS: ${{ job.status }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ "$JOB_STATUS" = "success" ]; then
-            ICON=":white_check_mark:"; LABEL="succeeded"
-          else
-            ICON=":x:"; LABEL="failed ($JOB_STATUS)"
-          fi
-          BODY="$ICON **deploy-staging** $LABEL — [run]($RUN_URL) · sha \`$SHA\`"
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "$BODY"
