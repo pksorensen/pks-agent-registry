@@ -57,6 +57,20 @@ func (s *Server) handleMgmtOwnerCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, ownerView{Name: o.Name, CreatedAt: o.CreatedAt.Format("2006-01-02T15:04:05Z")})
 }
 
+func (s *Server) handleMgmtOwnerGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	o, err := s.cfg.Store.GetOwner(name)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "owner not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, ownerView{Name: o.Name, CreatedAt: o.CreatedAt.Format("2006-01-02T15:04:05Z")})
+}
+
 func (s *Server) handleMgmtOwnerDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.cfg.Store.DeleteOwner(name); errors.Is(err, store.ErrNotFound) {

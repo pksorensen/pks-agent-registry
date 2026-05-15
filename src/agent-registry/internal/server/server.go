@@ -61,6 +61,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /_mgmt/health", s.handleHealth)
 	m.HandleFunc("GET /_mgmt/owners", s.requireAdmin(s.handleMgmtOwnersList))
 	m.HandleFunc("POST /_mgmt/owners", s.requireAdmin(s.handleMgmtOwnerCreate))
+	m.HandleFunc("GET /_mgmt/owners/{name}", s.requireAdmin(s.handleMgmtOwnerGet))
 	m.HandleFunc("DELETE /_mgmt/owners/{name}", s.requireAdmin(s.handleMgmtOwnerDelete))
 	m.HandleFunc("PUT /_mgmt/owners/{name}/password", s.requireAdmin(s.handleMgmtOwnerPassword))
 	m.HandleFunc("GET /_mgmt/repos", s.requireAdmin(s.handleMgmtReposList))

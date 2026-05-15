@@ -12,7 +12,7 @@ import (
 
 // Run dispatches the given args ([]string after the program name). Returns an
 // exit code.
-func Run(st *store.Store, args []string) int {
+func Run(adm Admin, args []string) int {
 	if len(args) == 0 {
 		printHelp()
 		return 2
@@ -22,13 +22,13 @@ func Run(st *store.Store, args []string) int {
 		printHelp()
 		return 0
 	case "owner":
-		return runOwner(st, args[1:])
+		return runOwner(adm, args[1:])
 	case "repo":
-		return runRepo(st, args[1:])
+		return runRepo(adm, args[1:])
 	case "tag":
-		return runTag(st, args[1:])
+		return runTag(adm, args[1:])
 	case "gc":
-		return runGC(st)
+		return runGC(adm)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n", args[0])
 		printHelp()
@@ -59,7 +59,7 @@ Environment:
   REGISTRY_PASSWORD       Used as the password when stdin is not a TTY`)
 }
 
-func runOwner(st *store.Store, args []string) int {
+func runOwner(adm Admin, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "owner: missing subcommand")
 		return 2
@@ -75,7 +75,7 @@ func runOwner(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		o, err := st.PutOwner(args[1], pw)
+		o, err := adm.PutOwner(args[1], pw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -83,7 +83,7 @@ func runOwner(st *store.Store, args []string) int {
 		fmt.Printf("created owner %q at %s\n", o.Name, o.CreatedAt.Format("2006-01-02T15:04:05Z"))
 		return 0
 	case "list":
-		names, err := st.ListOwners()
+		names, err := adm.ListOwners()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -97,7 +97,7 @@ func runOwner(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, "owner password <name>")
 			return 2
 		}
-		if _, err := st.GetOwner(args[1]); err != nil {
+		if _, err := adm.GetOwner(args[1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -106,7 +106,7 @@ func runOwner(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		if _, err := st.PutOwner(args[1], pw); err != nil {
+		if _, err := adm.PutOwner(args[1], pw); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -117,7 +117,7 @@ func runOwner(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, "owner delete <name>")
 			return 2
 		}
-		if err := st.DeleteOwner(args[1]); err != nil {
+		if err := adm.DeleteOwner(args[1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -129,7 +129,7 @@ func runOwner(st *store.Store, args []string) int {
 	}
 }
 
-func runRepo(st *store.Store, args []string) int {
+func runRepo(adm Admin, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "repo: missing subcommand")
 		return 2
@@ -141,9 +141,9 @@ func runRepo(st *store.Store, args []string) int {
 			err   error
 		)
 		if len(args) >= 2 {
-			repos, err = st.ListReposByOwner(args[1])
+			repos, err = adm.ListReposByOwner(args[1])
 		} else {
-			repos, err = st.ListRepos()
+			repos, err = adm.ListRepos()
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -163,7 +163,7 @@ func runRepo(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		if err := st.DeleteRepo(owner, name); err != nil {
+		if err := adm.DeleteRepo(owner, name); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -175,7 +175,7 @@ func runRepo(st *store.Store, args []string) int {
 	}
 }
 
-func runTag(st *store.Store, args []string) int {
+func runTag(adm Admin, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "tag: missing subcommand")
 		return 2
@@ -191,7 +191,7 @@ func runTag(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		tags, err := st.ListTags(owner, name)
+		tags, err := adm.ListTags(owner, name)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -215,7 +215,7 @@ func runTag(st *store.Store, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		if err := st.DeleteTag(owner, name, tag); err != nil {
+		if err := adm.DeleteTag(owner, name, tag); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -227,8 +227,8 @@ func runTag(st *store.Store, args []string) int {
 	}
 }
 
-func runGC(st *store.Store) int {
-	deleted, err := st.GC()
+func runGC(adm Admin) int {
+	deleted, err := adm.GC()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
