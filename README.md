@@ -30,6 +30,7 @@ The same binary is also an **admin CLI** — invoke any non-`serve` subcommand v
 | `REGISTRY_ADDR`        | `:5000`  | HTTP listen address                                                      |
 | `REGISTRY_ADMIN_TOKEN` | (empty)  | Bearer token for `/_mgmt/` endpoints. Management API is disabled if unset. |
 | `REGISTRY_PASSWORD`    | (empty)  | Used as the password by the CLI when stdin is not a TTY                  |
+| `REGISTRY_REMOTE`      | (empty)  | Target URL for the CLI's *remote admin* mode (e.g. `https://registry-uat.agentics.dk`). When set, admin subcommands talk to that server's `/_mgmt/` API instead of the local filesystem. Requires `REGISTRY_ADMIN_TOKEN`. |
 
 ## Storage Layout
 
@@ -68,7 +69,25 @@ docker push localhost:5000/pksorensen/alpine:3.21
 
 ## Admin CLI
 
-All admin commands operate directly on the filesystem store — they work whether or not the server is running.
+The CLI runs in one of two modes:
+
+- **Local** (default) — operates directly on `USER_DATA_DIR` on disk. Use this via `docker exec` on the running container, or directly on the host. Works even when the HTTP server isn't running.
+- **Remote** — set `REGISTRY_REMOTE` + `REGISTRY_ADMIN_TOKEN` and the same subcommands hit the live `/_mgmt/` API over HTTP. Use this from a laptop, CI job, or anywhere outside the container.
+
+```bash
+# Local (inside the container):
+docker exec -it agent-registry ./agent-registry owner add pksorensen
+
+# Remote (from anywhere):
+export REGISTRY_REMOTE=https://registry-uat.agentics.dk
+export REGISTRY_ADMIN_TOKEN=$(pass show coolify/registry-uat/admin-token)
+agent-registry owner list
+agent-registry repo list pksorensen
+agent-registry tag delete pksorensen/hello-world:smoke
+agent-registry gc
+```
+
+Image push/pull stays the docker (or podman/skopeo/crane) CLI's job — the admin verbs below are everything our binary adds on top.
 
 ```bash
 # Owners
