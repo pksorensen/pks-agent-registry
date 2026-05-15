@@ -37,7 +37,7 @@ jobs:
       - name: Build and push
         run: |
           VERSION="${{ needs.release-please.outputs.version }}"
-          docker build -t registry.kjeldager.io/agent-registry:${VERSION} src/agent-registry/
+          docker build -t registry.kjeldager.io/agent-registry:${VERSION} .
           docker tag registry.kjeldager.io/agent-registry:${VERSION} registry.kjeldager.io/agent-registry:latest
           docker push registry.kjeldager.io/agent-registry:${VERSION}
           docker push registry.kjeldager.io/agent-registry:latest

@@ -26,7 +26,7 @@ The same binary is also an **admin CLI** — invoke any non-`serve` subcommand v
 
 | Variable               | Default  | Description                                                              |
 |------------------------|----------|--------------------------------------------------------------------------|
-| `USER_DATA_DIR`        | `/data`  | Persistent storage path                                                  |
+| `USER_DATA_DIR`        | `/app/user-data` | Persistent storage path                                          |
 | `REGISTRY_ADDR`        | `:5000`  | HTTP listen address                                                      |
 | `REGISTRY_ADMIN_TOKEN` | (empty)  | Bearer token for `/_mgmt/` endpoints. Management API is disabled if unset. |
 | `REGISTRY_PASSWORD`    | (empty)  | Used as the password by the CLI when stdin is not a TTY                  |
@@ -53,7 +53,7 @@ docker run -d \
   --name agent-registry \
   --restart unless-stopped \
   -p 5000:5000 \
-  -v agent-registry-data:/data \
+  -v agent-registry-data:/app/user-data \
   -e REGISTRY_ADMIN_TOKEN=$(openssl rand -hex 32) \
   registry.kjeldager.io/agent-registry:latest
 
@@ -130,7 +130,7 @@ docker run -d \
   --name agent-registry \
   --restart unless-stopped \
   -p 127.0.0.1:5000:5000 \
-  -v agent-registry-data:/data \
+  -v agent-registry-data:/app/user-data \
   -e REGISTRY_ADMIN_TOKEN=$(openssl rand -hex 32) \
   registry.kjeldager.io/agent-registry:latest
 ```
