@@ -1,0 +1,296 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+
+	"github.com/pksorensen/pks-agent-registry/internal/store"
+)
+
+func (s *Server) handleV2Base(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	repos, err := s.cfg.Store.ListRepos()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"repositories": repos})
+}
+
+func (s *Server) handleTagsList(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	tags, err := s.cfg.Store.ListTags(owner, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"name": owner + "/" + name,
+		"tags": tags,
+	})
+}
+
+// --- manifests ---
+
+func (s *Server) handleManifestGet(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	ref := r.PathValue("ref")
+	body, info, err := s.cfg.Store.GetManifest(owner, name, ref)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeManifestUnknown, "manifest not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	mt := info.MediaType
+	if mt == "" {
+		mt = "application/vnd.oci.image.manifest.v1+json"
+	}
+	w.Header().Set("Content-Type", mt)
+	w.Header().Set("Docker-Content-Digest", info.Digest)
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+func (s *Server) handleManifestPut(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	ref := r.PathValue("ref")
+	mediaType := r.Header.Get("Content-Type")
+	if mediaType == "" {
+		mediaType = "application/vnd.oci.image.manifest.v1+json"
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeManifestInvalid, err.Error())
+		return
+	}
+	info, err := s.cfg.Store.PutManifest(owner, name, ref, mediaType, body)
+	if errors.Is(err, store.ErrInvalidName) {
+		writeError(w, http.StatusBadRequest, CodeNameInvalid, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeManifestInvalid, err.Error())
+		return
+	}
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/manifests/%s", owner, name, info.Digest))
+	w.Header().Set("Docker-Content-Digest", info.Digest)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) handleManifestDelete(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	ref := r.PathValue("ref")
+	if err := s.cfg.Store.DeleteManifest(owner, name, ref); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeManifestUnknown, "manifest not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// --- blobs ---
+
+func (s *Server) handleBlobHead(w http.ResponseWriter, r *http.Request) {
+	digest := r.PathValue("digest")
+	exists, size, err := s.cfg.Store.HasBlob(digest)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeDigestInvalid, err.Error())
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob not found")
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
+	digest := r.PathValue("digest")
+	rc, size, err := s.cfg.Store.OpenBlob(digest)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, CodeDigestInvalid, err.Error())
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = io.Copy(w, rc)
+}
+
+func (s *Server) handleBlobDelete(w http.ResponseWriter, r *http.Request) {
+	digest := r.PathValue("digest")
+	if err := s.cfg.Store.DeleteBlob(digest); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeBlobUnknown, "blob not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusBadRequest, CodeDigestInvalid, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// --- blob uploads ---
+
+func (s *Server) handleUploadStart(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	digest := r.URL.Query().Get("digest")
+	id, err := s.cfg.Store.StartUpload()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+
+	// Monolithic POST: body present and ?digest=... → write body then finalize.
+	if digest != "" && r.ContentLength != 0 {
+		if _, err := s.cfg.Store.AppendUpload(id, r.Body); err != nil {
+			_ = s.cfg.Store.AbortUpload(id)
+			writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+			return
+		}
+		if err := s.cfg.Store.FinalizeUpload(id, digest); err != nil {
+			_ = s.cfg.Store.AbortUpload(id)
+			if errors.Is(err, store.ErrDigestMismatch) {
+				writeError(w, http.StatusBadRequest, CodeDigestInvalid, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+			return
+		}
+		w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/blobs/%s", owner, name, digest))
+		w.Header().Set("Docker-Content-Digest", digest)
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/blobs/uploads/%s", owner, name, id))
+	w.Header().Set("Range", "0-0")
+	w.Header().Set("Docker-Upload-UUID", id)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleUploadPatch(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	size, err := s.cfg.Store.AppendUpload(id, r.Body)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeBlobUploadUnknown, "upload not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+		return
+	}
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/blobs/uploads/%s", owner, name, id))
+	w.Header().Set("Range", fmt.Sprintf("0-%d", size-1))
+	w.Header().Set("Docker-Upload-UUID", id)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleUploadPut(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	digest := r.URL.Query().Get("digest")
+	if digest == "" {
+		writeError(w, http.StatusBadRequest, CodeDigestInvalid, "digest query parameter required")
+		return
+	}
+	if r.ContentLength > 0 {
+		if _, err := s.cfg.Store.AppendUpload(id, r.Body); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, CodeBlobUploadUnknown, "upload not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+			return
+		}
+	}
+	if err := s.cfg.Store.FinalizeUpload(id, digest); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, CodeBlobUploadUnknown, "upload not found")
+			return
+		}
+		if errors.Is(err, store.ErrDigestMismatch) {
+			writeError(w, http.StatusBadRequest, CodeDigestInvalid, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+		return
+	}
+	w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/blobs/%s", owner, name, digest))
+	w.Header().Set("Docker-Content-Digest", digest)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) handleUploadAbort(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.cfg.Store.AbortUpload(id); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, CodeBlobUploadUnknown, "upload not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeBlobUploadInvalid, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// repoParts extracts {owner}/{name} from the request and validates them.
+func repoParts(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	owner := r.PathValue("owner")
+	name := r.PathValue("name")
+	if !store.ValidName(owner) || !store.ValidName(name) {
+		writeError(w, http.StatusBadRequest, CodeNameInvalid, "invalid repository name")
+		return "", "", false
+	}
+	return owner, name, true
+}

@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-push:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: [self-hosted, devcontainer-runner]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to registry
+        uses: pksorensen/pks-cli/.github/actions/registry-login@main
+        with:
+          registry: registry.kjeldager.io
+      - name: Build and push
+        run: |
+          VERSION="${{ needs.release-please.outputs.version }}"
+          docker build -t registry.kjeldager.io/agent-registry:${VERSION} src/agent-registry/
+          docker tag registry.kjeldager.io/agent-registry:${VERSION} registry.kjeldager.io/agent-registry:latest
+          docker push registry.kjeldager.io/agent-registry:${VERSION}
+          docker push registry.kjeldager.io/agent-registry:latest
+      - name: Log out
+        if: always()
+        run: docker logout registry.kjeldager.io

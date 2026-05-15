@@ -1,0 +1,4 @@
+/agent-registry
+src/agent-registry/agent-registry
+*.test
+/data/
