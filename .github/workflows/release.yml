@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write   # required so the coolify-deploy runner can fetch a GH OIDC token
 
 jobs:
   release-please:
@@ -44,3 +45,19 @@ jobs:
       - name: Log out
         if: always()
         run: docker logout registry.kjeldager.io
+
+  # ── Deploy to production — fires when release-please cuts a real tag ───────
+  deploy-production:
+    needs: [release-please, build-push]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: [self-hosted, devcontainer-runner]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pksorensen/pks-cli/.github/actions/coolify-deploy@main
+        with:
+          app-name: agent-registry
+          environment: production
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ needs.release-please.outputs.version }}
+          tag-name: ${{ needs.release-please.outputs.tag_name }}
