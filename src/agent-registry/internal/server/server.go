@@ -108,22 +108,54 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// isTrustedProxySource reports whether the TCP source IP of r is in one of the
-// configured trusted CIDRs. Only the raw RemoteAddr (TCP-level) is consulted —
-// X-Forwarded-For is NOT trusted for this decision, since clients can spoof it.
+// isTrustedProxySource reports whether the request originated from a *trusted internal
+// network*, not just from the proxy itself. The check has two parts:
+//
+//  1. The TCP source IP (r.RemoteAddr) must be in TrustedProxyCIDRs — this confirms the
+//     immediate sender is the reverse proxy we expect.
+//  2. The LAST entry of X-Forwarded-For must also be in TrustedProxyCIDRs — this is the
+//     IP that the proxy itself observed as its caller. The well-known reverse proxies
+//     (Traefik, Caddy, nginx) APPEND to XFF rather than trust client-supplied values, so
+//     the last hop is set by the proxy and reflects the real upstream. For an external
+//     internet client, the last XFF entry is their public IP (not in TrustedProxyCIDRs)
+//     → bypass denied. For a docker-host pull that loops through the bridge to the proxy,
+//     the source IP at the proxy is private (a docker0 / bridge gateway) → bypass allowed.
+//
+// Combining (1) and (2) means: only requests that were both delivered by the trusted proxy
+// AND originated from a trusted upstream get the anonymous-read pass.
 func (s *Server) isTrustedProxySource(r *http.Request) bool {
 	if len(s.cfg.TrustedProxyCIDRs) == 0 {
 		return false
 	}
+	// (1) TCP source is the proxy itself.
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	tcpIP := net.ParseIP(host)
+	if tcpIP == nil || !cidrContains(s.cfg.TrustedProxyCIDRs, tcpIP) {
 		return false
 	}
-	for _, n := range s.cfg.TrustedProxyCIDRs {
+	// (2) The proxy-appended last XFF entry is also private. Missing/empty XFF means the
+	// request didn't traverse a proxy — reject (a direct connection on the bridge with no
+	// proxy is unexpected; the operator should narrow the CIDR if that's intentional).
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return false
+	}
+	// XFF is "client, proxy1, proxy2, ..." — Traefik/Caddy/nginx append the immediate
+	// previous-hop IP as the last entry. We want that last entry.
+	parts := strings.Split(xff, ",")
+	last := strings.TrimSpace(parts[len(parts)-1])
+	upstreamIP := net.ParseIP(last)
+	if upstreamIP == nil {
+		return false
+	}
+	return cidrContains(s.cfg.TrustedProxyCIDRs, upstreamIP)
+}
+
+func cidrContains(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
 		if n.Contains(ip) {
 			return true
 		}
