@@ -13,5 +13,7 @@ ENV USER_DATA_DIR=/app/user-data
 ENV REGISTRY_ADDR=:5000
 EXPOSE 5000
 VOLUME /app/user-data
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:5000/_mgmt/health || exit 1
 ENTRYPOINT ["./agent-registry"]
 CMD ["serve"]
