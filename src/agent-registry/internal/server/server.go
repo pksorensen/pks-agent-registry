@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"strings"
 
@@ -12,6 +13,11 @@ type Config struct {
 	Addr       string
 	AdminToken string
 	Store      *store.Store
+
+	// TrustedProxyCIDRs enables anonymous OCI read (GET/HEAD on /v2/*) when the request's
+	// TCP source IP falls in one of these CIDRs. Writes always require auth. Empty disables
+	// the bypass entirely. Typical value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8".
+	TrustedProxyCIDRs []*net.IPNet
 }
 
 type Server struct {
@@ -78,8 +84,19 @@ type ctxKey int
 const ctxKeyAuthUser ctxKey = 1
 
 // requireOwnerAuth lets any valid owner credential through (read-only access).
+// When TrustedProxyCIDRs is configured, the request's TCP source IP is checked first:
+// requests originating from a trusted proxy/private network are allowed through without
+// credentials (the auth boundary is then enforced by the proxy chain). Writes still go
+// through requireOwnerWrite which calls this then enforces the {owner} segment match —
+// but writes additionally validate r.BasicAuth() explicitly to keep push authenticated
+// even when the proxy bypass is on.
 func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Trusted-proxy bypass for reads (GET/HEAD only). Source must be in a configured CIDR.
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && s.isTrustedProxySource(r) {
+			next(w, r)
+			return
+		}
 		user, ok := s.basicAuth(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
@@ -89,6 +106,29 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 		r = r.WithContext(contextWithUser(r.Context(), user))
 		next(w, r)
 	}
+}
+
+// isTrustedProxySource reports whether the TCP source IP of r is in one of the
+// configured trusted CIDRs. Only the raw RemoteAddr (TCP-level) is consulted —
+// X-Forwarded-For is NOT trusted for this decision, since clients can spoof it.
+func (s *Server) isTrustedProxySource(r *http.Request) bool {
+	if len(s.cfg.TrustedProxyCIDRs) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range s.cfg.TrustedProxyCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // requireOwnerWrite additionally enforces that the path's {owner} segment

@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strings"
 
 	"github.com/pksorensen/pks-agent-registry/internal/cli"
 	"github.com/pksorensen/pks-agent-registry/internal/remote"
@@ -46,13 +48,32 @@ func main() {
 	addr := getEnv("REGISTRY_ADDR", ":5000")
 	adminToken := os.Getenv("REGISTRY_ADMIN_TOKEN")
 
+	// REGISTRY_TRUSTED_PROXY_CIDRS — comma-separated list of CIDRs whose TCP source
+	// is allowed anonymous GET/HEAD on /v2/*. Intended for proxy-fronted deployments
+	// where the proxy itself enforces the auth boundary. Empty disables the bypass.
+	var trustedCIDRs []*net.IPNet
+	if raw := os.Getenv("REGISTRY_TRUSTED_PROXY_CIDRS"); raw != "" {
+		for _, c := range strings.Split(raw, ",") {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			_, n, err := net.ParseCIDR(c)
+			if err != nil {
+				log.Fatalf("REGISTRY_TRUSTED_PROXY_CIDRS: invalid CIDR %q: %v", c, err)
+			}
+			trustedCIDRs = append(trustedCIDRs, n)
+		}
+	}
+
 	srv := server.New(server.Config{
-		Addr:       addr,
-		AdminToken: adminToken,
-		Store:      st,
+		Addr:              addr,
+		AdminToken:        adminToken,
+		Store:             st,
+		TrustedProxyCIDRs: trustedCIDRs,
 	})
 
-	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t)", addr, dataDir, adminToken != "")
+	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d)", addr, dataDir, adminToken != "", len(trustedCIDRs))
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

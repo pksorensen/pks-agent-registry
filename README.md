@@ -31,6 +31,7 @@ The same binary is also an **admin CLI** — invoke any non-`serve` subcommand v
 | `REGISTRY_ADMIN_TOKEN` | (empty)  | Bearer token for `/_mgmt/` endpoints. Management API is disabled if unset. |
 | `REGISTRY_PASSWORD`    | (empty)  | Used as the password by the CLI when stdin is not a TTY                  |
 | `REGISTRY_REMOTE`      | (empty)  | Target URL for the CLI's *remote admin* mode (e.g. `https://registry-uat.agentics.dk`). When set, admin subcommands talk to that server's `/_mgmt/` API instead of the local filesystem. Requires `REGISTRY_ADMIN_TOKEN`. |
+| `REGISTRY_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDRs. When the TCP source IP of a `GET`/`HEAD` request on `/v2/*` falls in one of these networks, the request is served without Basic-auth. Intended for reverse-proxied deployments where the proxy fronts a trusted private network (e.g. a Coolify/Traefik homelab bridge). Writes always require auth. Example: `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8`. |
 
 ## Storage Layout
 
