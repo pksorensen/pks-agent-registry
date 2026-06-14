@@ -26,9 +26,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Build once with buildx, push the same digest to both the private registry
-  # (consumed by Coolify) and GHCR (public). One build → identical vX.Y.Z tag
-  # everywhere, so the two registries cannot drift on a release.
+  # Build once with buildx, push the same digest to registry.agentics.dk
+  # (canonical, used by Coolify) and GHCR (public mirror). One build → identical
+  # vX.Y.Z tag everywhere, so the two registries cannot drift on a release.
   build-push:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -44,10 +44,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to private registry
+      - name: Log in to registry.agentics.dk
         uses: pksorensen/pks-cli/.github/actions/registry-login@main
         with:
-          registry: registry.kjeldager.io
+          registry: registry.agentics.dk
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -63,17 +63,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            registry.kjeldager.io/agent-registry:${{ env.VERSION }}
-            registry.kjeldager.io/agent-registry:latest
+            registry.agentics.dk/agentics/pks-agent-registry:${{ env.VERSION }}
+            registry.agentics.dk/agentics/pks-agent-registry:latest
             ghcr.io/pksorensen/pks-agent-registry:v${{ env.VERSION }}
             ghcr.io/pksorensen/pks-agent-registry:${{ env.VERSION }}
             ghcr.io/pksorensen/pks-agent-registry:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Log out of private registry
+      - name: Log out of registry.agentics.dk
         if: always()
-        run: docker logout registry.kjeldager.io
+        run: docker logout registry.agentics.dk
 
       - name: Make GHCR package public
         continue-on-error: true
