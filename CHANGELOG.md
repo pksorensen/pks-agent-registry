@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.0.1...agent-registry-v1.1.0) (2026-06-14)
+
+
+### Features
+
+* REGISTRY_TRUSTED_PROXY_CIDRS — anonymous reads from trusted proxy ([c384457](https://github.com/pksorensen/pks-agent-registry/commit/c38445785c64243e05ddcfbd863a6b261139b8ea))
+
+
+### Bug Fixes
+
+* **security:** trusted-proxy bypass requires private XFF tail, not just proxy TCP source ([c1ade7e](https://github.com/pksorensen/pks-agent-registry/commit/c1ade7e8e3ec8e0ff6164218813f2246ac285b44))
+
 ## [1.0.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.0.0...agent-registry-v1.0.1) (2026-05-25)
 
 
