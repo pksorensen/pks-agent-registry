@@ -26,8 +26,20 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
 		return
 	}
+	// Hide repositories the caller isn't allowed to pull (legacy/anonymous see all).
+	owner := ownerFromContext(r.Context())
+	visible := make([]string, 0, len(repos))
+	for _, full := range repos {
+		po, name, perr := store.ParseRepo(full)
+		if perr != nil {
+			continue
+		}
+		if owner.CanPull(po, name) {
+			visible = append(visible, full)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"repositories": repos})
+	_ = json.NewEncoder(w).Encode(map[string]any{"repositories": visible})
 }
 
 func (s *Server) handleTagsList(w http.ResponseWriter, r *http.Request) {

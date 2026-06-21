@@ -41,7 +41,13 @@ func printHelp() {
 
 Usage:
   agent-registry serve                                Run the registry server (default)
-  agent-registry owner add <name>                     Create an owner (password from REGISTRY_PASSWORD or stdin)
+  agent-registry owner add <name> [--no-push] [--pull <scope>]...
+                                                      Create an owner (password from REGISTRY_PASSWORD or stdin).
+                                                      With no flags the owner gets full access; --no-push makes it
+                                                      pull-only; --pull adds a cross-namespace pull scope glob
+                                                      (e.g. agentics/pks-agent-marketplace, agentics/*, */*).
+  agent-registry owner perms <name> [--push] [--pull <scope>]... | --full
+                                                      Replace an owner's permissions. --full restores full access.
   agent-registry owner list                           List owners
   agent-registry owner password <name>                Reset an owner's password
   agent-registry owner delete <name>                  Delete an owner
@@ -67,7 +73,13 @@ func runOwner(adm Admin, args []string) int {
 	switch args[0] {
 	case "add":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "owner add <name>")
+			fmt.Fprintln(os.Stderr, "owner add <name> [--no-push] [--pull <scope>]...")
+			return 2
+		}
+		name := args[1]
+		perms, hasPerms, err := parsePermFlags(args[2:], false)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 		pw, err := readPassword("Password")
@@ -75,12 +87,43 @@ func runOwner(adm Admin, args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		o, err := adm.PutOwner(args[1], pw)
+		// No perm flags → nil perms (legacy full access). Flags → restricted owner.
+		var p *store.Permissions
+		if hasPerms {
+			p = perms
+		}
+		o, err := adm.CreateOwner(name, pw, p)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("created owner %q at %s\n", o.Name, o.CreatedAt.Format("2006-01-02T15:04:05Z"))
+		fmt.Printf("created owner %q at %s%s\n", o.Name, o.CreatedAt.Format("2006-01-02T15:04:05Z"), permSummary(o.Permissions))
+		return 0
+	case "perms":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "owner perms <name> [--push] [--pull <scope>]... | --full")
+			return 2
+		}
+		name := args[1]
+		rest := args[2:]
+		if len(rest) == 1 && rest[0] == "--full" {
+			if err := adm.SetPermissions(name, nil); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			fmt.Printf("owner %q set to full access\n", name)
+			return 0
+		}
+		perms, _, err := parsePermFlags(rest, true)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := adm.SetPermissions(name, perms); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("updated permissions for owner %q%s\n", name, permSummary(perms))
 		return 0
 	case "list":
 		names, err := adm.ListOwners()
@@ -238,6 +281,47 @@ func runGC(adm Admin) int {
 	}
 	fmt.Fprintf(os.Stderr, "removed %d unreferenced blob(s)\n", len(deleted))
 	return 0
+}
+
+// parsePermFlags parses [--push] [--no-push] [--pull <scope>]... into a
+// Permissions. defaultPush sets the Push value when neither flag is given.
+// hasPerms reports whether any flag was present (so callers can distinguish
+// "no flags" from "explicit empty scopes").
+func parsePermFlags(args []string, defaultPush bool) (perms *store.Permissions, hasPerms bool, err error) {
+	push := defaultPush
+	var scopes []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--push":
+			push, hasPerms = true, true
+		case "--no-push":
+			push, hasPerms = false, true
+		case "--pull":
+			if i+1 >= len(args) {
+				return nil, false, fmt.Errorf("--pull requires a scope (e.g. agentics/pks-agent-marketplace)")
+			}
+			scopes = append(scopes, args[i+1])
+			hasPerms = true
+			i++
+		default:
+			return nil, false, fmt.Errorf("unknown flag %q", args[i])
+		}
+	}
+	return &store.Permissions{Push: push, PullScopes: scopes}, hasPerms, nil
+}
+
+func permSummary(p *store.Permissions) string {
+	if p == nil {
+		return " (full access)"
+	}
+	push := "pull-only"
+	if p.Push {
+		push = "push+pull"
+	}
+	if len(p.PullScopes) == 0 {
+		return fmt.Sprintf(" (%s, own namespace only)", push)
+	}
+	return fmt.Sprintf(" (%s, scopes: %s)", push, strings.Join(p.PullScopes, ", "))
 }
 
 func splitRepoTag(s string) (repo, tag string, ok bool) {

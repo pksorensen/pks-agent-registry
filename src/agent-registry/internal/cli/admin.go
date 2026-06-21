@@ -9,6 +9,8 @@ import "github.com/pksorensen/pks-agent-registry/internal/store"
 type Admin interface {
 	// Owners
 	PutOwner(name, password string) (*store.Owner, error)
+	CreateOwner(name, password string, perms *store.Permissions) (*store.Owner, error)
+	SetPermissions(name string, perms *store.Permissions) error
 	GetOwner(name string) (*store.Owner, error)
 	ListOwners() ([]string, error)
 	DeleteOwner(name string) error

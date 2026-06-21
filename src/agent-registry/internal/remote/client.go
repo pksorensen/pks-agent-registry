@@ -73,8 +73,9 @@ func (c *Client) expect(resp *http.Response, v any, ok ...int) error {
 // -------- Owners --------
 
 type ownerView struct {
-	Name      string `json:"name"`
-	CreatedAt string `json:"createdAt"`
+	Name        string             `json:"name"`
+	CreatedAt   string             `json:"createdAt"`
+	Permissions *store.Permissions `json:"permissions,omitempty"`
 }
 
 type ownersListResp struct {
@@ -83,7 +84,7 @@ type ownersListResp struct {
 
 func (v ownerView) toOwner() *store.Owner {
 	t, _ := time.Parse("2006-01-02T15:04:05Z", v.CreatedAt)
-	return &store.Owner{Name: v.Name, CreatedAt: t}
+	return &store.Owner{Name: v.Name, CreatedAt: t, Permissions: v.Permissions}
 }
 
 func (c *Client) PutOwner(name, password string) (*store.Owner, error) {
@@ -119,6 +120,39 @@ func (c *Client) PutOwner(name, password string) (*store.Owner, error) {
 		return nil, err
 	}
 	return c.GetOwner(name)
+}
+
+func (c *Client) CreateOwner(name, password string, perms *store.Permissions) (*store.Owner, error) {
+	body := map[string]any{"name": name, "password": password}
+	if perms != nil {
+		body["push"] = perms.Push
+		body["pullScopes"] = perms.PullScopes
+	}
+	resp, err := c.do(http.MethodPost, "/_mgmt/owners", body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusConflict {
+		resp.Body.Close()
+		return nil, store.ErrExists
+	}
+	var v ownerView
+	if err := c.expect(resp, &v, http.StatusCreated); err != nil {
+		return nil, err
+	}
+	return v.toOwner(), nil
+}
+
+func (c *Client) SetPermissions(name string, perms *store.Permissions) error {
+	if perms == nil {
+		perms = &store.Permissions{}
+	}
+	resp, err := c.do(http.MethodPut, "/_mgmt/owners/"+url.PathEscape(name)+"/permissions",
+		map[string]any{"push": perms.Push, "pullScopes": perms.PullScopes})
+	if err != nil {
+		return err
+	}
+	return c.expect(resp, nil, http.StatusNoContent)
 }
 
 func (c *Client) GetOwner(name string) (*store.Owner, error) {
@@ -250,6 +284,8 @@ func (c *Client) GC() ([]string, error) {
 // you add a method to cli.Admin, mirror it here so the build fails fast.
 var _ interface {
 	PutOwner(name, password string) (*store.Owner, error)
+	CreateOwner(name, password string, perms *store.Permissions) (*store.Owner, error)
+	SetPermissions(name string, perms *store.Permissions) error
 	GetOwner(name string) (*store.Owner, error)
 	ListOwners() ([]string, error)
 	DeleteOwner(name string) error

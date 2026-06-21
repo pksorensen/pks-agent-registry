@@ -47,15 +47,15 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v2/", s.requireOwnerAuth(s.handleV2Base))
 	m.HandleFunc("GET /v2/_catalog", s.requireOwnerAuth(s.handleCatalog))
 
-	m.HandleFunc("GET /v2/{owner}/{name}/tags/list", s.requireOwnerAuth(s.handleTagsList))
+	m.HandleFunc("GET /v2/{owner}/{name}/tags/list", s.requireOwnerRead(s.handleTagsList))
 
-	m.HandleFunc("GET /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerAuth(s.handleManifestGet))
-	m.HandleFunc("HEAD /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerAuth(s.handleManifestGet))
+	m.HandleFunc("GET /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerRead(s.handleManifestGet))
+	m.HandleFunc("HEAD /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerRead(s.handleManifestGet))
 	m.HandleFunc("PUT /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerWrite(s.handleManifestPut))
 	m.HandleFunc("DELETE /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerWrite(s.handleManifestDelete))
 
-	m.HandleFunc("GET /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerAuth(s.handleBlobGet))
-	m.HandleFunc("HEAD /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerAuth(s.handleBlobHead))
+	m.HandleFunc("GET /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerRead(s.handleBlobGet))
+	m.HandleFunc("HEAD /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerRead(s.handleBlobHead))
 	m.HandleFunc("DELETE /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerWrite(s.handleBlobDelete))
 
 	m.HandleFunc("POST /v2/{owner}/{name}/blobs/uploads/", s.requireOwnerWrite(s.handleUploadStart))
@@ -70,6 +70,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /_mgmt/owners/{name}", s.requireAdmin(s.handleMgmtOwnerGet))
 	m.HandleFunc("DELETE /_mgmt/owners/{name}", s.requireAdmin(s.handleMgmtOwnerDelete))
 	m.HandleFunc("PUT /_mgmt/owners/{name}/password", s.requireAdmin(s.handleMgmtOwnerPassword))
+	m.HandleFunc("PUT /_mgmt/owners/{name}/permissions", s.requireAdmin(s.handleMgmtOwnerPermissions))
 	m.HandleFunc("GET /_mgmt/repos", s.requireAdmin(s.handleMgmtReposList))
 	m.HandleFunc("DELETE /_mgmt/repos/{owner}/{name}", s.requireAdmin(s.handleMgmtRepoDelete))
 	m.HandleFunc("GET /_mgmt/repos/{owner}/{name}/tags", s.requireAdmin(s.handleMgmtTagsList))
@@ -97,15 +98,30 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		user, ok := s.basicAuth(r)
+		owner, ok := s.basicAuth(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
 			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 			return
 		}
-		r = r.WithContext(contextWithUser(r.Context(), user))
+		r = r.WithContext(contextWithOwner(r.Context(), owner))
 		next(w, r)
 	}
+}
+
+// requireOwnerRead enforces per-repository pull scopes on top of authentication.
+// Owners with no Permissions block (legacy) and anonymous trusted-proxy reads
+// retain full read access; scoped owners are limited to their own namespace plus
+// matching PullScopes.
+func (s *Server) requireOwnerRead(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireOwnerAuth(func(w http.ResponseWriter, r *http.Request) {
+		owner := ownerFromContext(r.Context())
+		if !owner.CanPull(r.PathValue("owner"), r.PathValue("name")) {
+			writeError(w, http.StatusForbidden, CodeDenied, "not authorized to pull this repository")
+			return
+		}
+		next(w, r)
+	})
 }
 
 // isTrustedProxySource reports whether the request originated from a *trusted internal
@@ -167,10 +183,18 @@ func cidrContains(nets []*net.IPNet, ip net.IP) bool {
 // matches the authenticated user.
 func (s *Server) requireOwnerWrite(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireOwnerAuth(func(w http.ResponseWriter, r *http.Request) {
-		user := userFromContext(r.Context())
-		owner := r.PathValue("owner")
-		if owner != "" && owner != user {
+		owner := ownerFromContext(r.Context())
+		if owner == nil {
+			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
+			return
+		}
+		pathOwner := r.PathValue("owner")
+		if pathOwner != "" && pathOwner != owner.Name {
 			writeError(w, http.StatusForbidden, CodeDenied, "cannot write to another owner's namespace")
+			return
+		}
+		if !owner.CanPush() {
+			writeError(w, http.StatusForbidden, CodeDenied, "this credential is not permitted to push")
 			return
 		}
 		next(w, r)
@@ -198,13 +222,17 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) basicAuth(r *http.Request) (string, bool) {
+func (s *Server) basicAuth(r *http.Request) (*store.Owner, bool) {
 	user, pass, ok := r.BasicAuth()
 	if !ok {
-		return "", false
+		return nil, false
 	}
 	if !s.cfg.Store.CheckPassword(user, pass) {
-		return "", false
+		return nil, false
 	}
-	return user, true
+	o, err := s.cfg.Store.GetOwner(user)
+	if err != nil {
+		return nil, false
+	}
+	return o, true
 }

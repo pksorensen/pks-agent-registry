@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,10 +19,10 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("not found")
+	ErrNotFound       = errors.New("not found")
 	ErrDigestMismatch = errors.New("digest mismatch")
-	ErrInvalidName   = errors.New("invalid name")
-	ErrExists        = errors.New("already exists")
+	ErrInvalidName    = errors.New("invalid name")
+	ErrExists         = errors.New("already exists")
 )
 
 type Store struct {
@@ -84,10 +85,67 @@ func ValidDigest(d string) bool {
 
 // -------- Owners --------
 
+// Permissions scopes what an owner credential may do. A nil *Permissions on an
+// Owner means "legacy full access" (push to own namespace + pull everything) —
+// this preserves the behaviour of owners created before permissions existed, so
+// no migration is needed. A non-nil *Permissions is enforced exactly.
+type Permissions struct {
+	// Push allows writing/deleting in the owner's OWN namespace. False = pull-only.
+	Push bool `json:"push"`
+	// PullScopes are glob patterns over "owner/name" granting cross-namespace
+	// reads. An owner can always read its own namespace regardless of this list.
+	// Patterns use path.Match semantics: "agentics/pks-agent-marketplace" (exact),
+	// "agentics/*" (all repos of an owner), "*" or "*/*" (everything).
+	PullScopes []string `json:"pullScopes"`
+}
+
 type Owner struct {
-	Name         string    `json:"name"`
-	PasswordHash string    `json:"passwordHash"`
-	CreatedAt    time.Time `json:"createdAt"`
+	Name         string       `json:"name"`
+	PasswordHash string       `json:"passwordHash"`
+	CreatedAt    time.Time    `json:"createdAt"`
+	Permissions  *Permissions `json:"permissions,omitempty"`
+}
+
+// CanPush reports whether this owner may push/delete in its own namespace.
+// A nil owner (anonymous trusted-proxy read path) can never push. A nil
+// Permissions block means legacy full access.
+func (o *Owner) CanPush() bool {
+	if o == nil {
+		return false
+	}
+	if o.Permissions == nil {
+		return true
+	}
+	return o.Permissions.Push
+}
+
+// CanPull reports whether this owner may pull the repo "targetOwner/targetName".
+// A nil owner (anonymous trusted-proxy read) and a nil Permissions block both
+// mean full read access. Otherwise reads are limited to the owner's own
+// namespace plus any matching PullScopes.
+func (o *Owner) CanPull(targetOwner, targetName string) bool {
+	if o == nil || o.Permissions == nil {
+		return true
+	}
+	if targetOwner == o.Name {
+		return true
+	}
+	full := targetOwner + "/" + targetName
+	for _, p := range o.Permissions.PullScopes {
+		if scopeMatch(p, full) {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeMatch matches a pull-scope glob against an "owner/name" string.
+func scopeMatch(pattern, full string) bool {
+	if pattern == "*" || pattern == "*/*" {
+		return true
+	}
+	ok, err := path.Match(pattern, full)
+	return err == nil && ok
 }
 
 func (s *Store) ownerPath(name string) string {
@@ -126,7 +184,9 @@ func (s *Store) PutOwner(name, password string) (*Owner, error) {
 		CreatedAt:    time.Now().UTC(),
 	}
 	if existing, err := s.GetOwner(name); err == nil && existing != nil {
+		// Preserve metadata that a password change must not clobber.
 		o.CreatedAt = existing.CreatedAt
+		o.Permissions = existing.Permissions
 	}
 	b, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
@@ -136,6 +196,51 @@ func (s *Store) PutOwner(name, password string) (*Owner, error) {
 		return nil, err
 	}
 	return o, nil
+}
+
+// CreateOwner creates a new owner with the given password and permissions,
+// returning ErrExists if one already exists. Unlike PutOwner (which upserts),
+// this never overwrites a live credential. A nil perms means legacy full access.
+func (s *Store) CreateOwner(name, password string, perms *Permissions) (*Owner, error) {
+	if !ValidName(name) {
+		return nil, ErrInvalidName
+	}
+	if _, err := s.GetOwner(name); err == nil {
+		return nil, ErrExists
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	o := &Owner{
+		Name:         name,
+		PasswordHash: string(hash),
+		CreatedAt:    time.Now().UTC(),
+		Permissions:  perms,
+	}
+	b, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileAtomic(s.ownerPath(name), b, 0o600); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// SetPermissions replaces an owner's permission block without touching its
+// password. A nil perms restores legacy full access.
+func (s *Store) SetPermissions(name string, perms *Permissions) error {
+	o, err := s.GetOwner(name)
+	if err != nil {
+		return err
+	}
+	o.Permissions = perms
+	b, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(s.ownerPath(name), b, 0o600)
 }
 
 func (s *Store) DeleteOwner(name string) error {

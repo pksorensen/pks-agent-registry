@@ -9,8 +9,17 @@ import (
 )
 
 type ownerView struct {
-	Name      string `json:"name"`
-	CreatedAt string `json:"createdAt"`
+	Name        string             `json:"name"`
+	CreatedAt   string             `json:"createdAt"`
+	Permissions *store.Permissions `json:"permissions,omitempty"`
+}
+
+func toOwnerView(o *store.Owner) ownerView {
+	return ownerView{
+		Name:        o.Name,
+		CreatedAt:   o.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		Permissions: o.Permissions,
+	}
 }
 
 func (s *Server) handleMgmtOwnersList(w http.ResponseWriter, r *http.Request) {
@@ -25,14 +34,16 @@ func (s *Server) handleMgmtOwnersList(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		out = append(out, ownerView{Name: o.Name, CreatedAt: o.CreatedAt.Format("2006-01-02T15:04:05Z")})
+		out = append(out, toOwnerView(o))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"owners": out})
 }
 
 type ownerCreateReq struct {
-	Name     string `json:"name"`
-	Password string `json:"password"`
+	Name       string   `json:"name"`
+	Password   string   `json:"password"`
+	Push       *bool    `json:"push,omitempty"`
+	PullScopes []string `json:"pullScopes,omitempty"`
 }
 
 func (s *Server) handleMgmtOwnerCreate(w http.ResponseWriter, r *http.Request) {
@@ -45,16 +56,29 @@ func (s *Server) handleMgmtOwnerCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name and password required", http.StatusBadRequest)
 		return
 	}
-	o, err := s.cfg.Store.PutOwner(req.Name, req.Password)
+	// Omitting both fields keeps perms nil (legacy full access); supplying either
+	// builds an explicit permission block.
+	var perms *store.Permissions
+	if req.Push != nil || req.PullScopes != nil {
+		perms = &store.Permissions{
+			Push:       req.Push != nil && *req.Push,
+			PullScopes: req.PullScopes,
+		}
+	}
+	o, err := s.cfg.Store.CreateOwner(req.Name, req.Password, perms)
 	if errors.Is(err, store.ErrInvalidName) {
 		http.Error(w, "invalid owner name", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, store.ErrExists) {
+		http.Error(w, "owner already exists", http.StatusConflict)
 		return
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, ownerView{Name: o.Name, CreatedAt: o.CreatedAt.Format("2006-01-02T15:04:05Z")})
+	writeJSON(w, http.StatusCreated, toOwnerView(o))
 }
 
 func (s *Server) handleMgmtOwnerGet(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +92,31 @@ func (s *Server) handleMgmtOwnerGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, ownerView{Name: o.Name, CreatedAt: o.CreatedAt.Format("2006-01-02T15:04:05Z")})
+	writeJSON(w, http.StatusOK, toOwnerView(o))
+}
+
+type permissionsReq struct {
+	Push       bool     `json:"push"`
+	PullScopes []string `json:"pullScopes"`
+}
+
+func (s *Server) handleMgmtOwnerPermissions(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req permissionsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, err := s.cfg.Store.GetOwner(name); errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "owner not found", http.StatusNotFound)
+		return
+	}
+	perms := &store.Permissions{Push: req.Push, PullScopes: req.PullScopes}
+	if err := s.cfg.Store.SetPermissions(name, perms); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleMgmtOwnerDelete(w http.ResponseWriter, r *http.Request) {
