@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.1.0...agent-registry-v1.2.0) (2026-06-21)
+
+
+### Features
+
+* **registry:** scope owner credentials with push/pull permissions ([e3ddca7](https://github.com/pksorensen/pks-agent-registry/commit/e3ddca74db620a7da83f13eeffd175bba3286cc4))
+
 ## [1.1.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.0.1...agent-registry-v1.1.0) (2026-06-14)
 
 
