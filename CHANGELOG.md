@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.2.0...agent-registry-v1.2.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **registry:** implement OCI 1.1 referrers API so modern Docker can pull multi-arch images ([4b9c9bd](https://github.com/pksorensen/pks-agent-registry/commit/4b9c9bdde5a59540980acda4f311a06c990de15c))
+
 ## [1.2.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.1.0...agent-registry-v1.2.0) (2026-06-21)
 
 
