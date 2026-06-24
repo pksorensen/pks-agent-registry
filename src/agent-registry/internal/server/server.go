@@ -54,6 +54,8 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerWrite(s.handleManifestPut))
 	m.HandleFunc("DELETE /v2/{owner}/{name}/manifests/{ref}", s.requireOwnerWrite(s.handleManifestDelete))
 
+	m.HandleFunc("GET /v2/{owner}/{name}/referrers/{digest}", s.requireOwnerRead(s.handleReferrers))
+
 	m.HandleFunc("GET /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerRead(s.handleBlobGet))
 	m.HandleFunc("HEAD /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerRead(s.handleBlobHead))
 	m.HandleFunc("DELETE /v2/{owner}/{name}/blobs/{digest}", s.requireOwnerWrite(s.handleBlobDelete))

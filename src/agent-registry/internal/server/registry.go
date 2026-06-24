@@ -116,7 +116,65 @@ func (s *Server) handleManifestPut(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", fmt.Sprintf("/v2/%s/%s/manifests/%s", owner, name, info.Digest))
 	w.Header().Set("Docker-Content-Digest", info.Digest)
+	// OCI 1.1: when the pushed manifest carries a subject, echo it so the client
+	// knows the referrers index was updated.
+	if info.Subject != "" {
+		w.Header().Set("OCI-Subject", info.Subject)
+	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// handleReferrers implements the OCI 1.1 referrers API:
+//
+//	GET /v2/<name>/referrers/<digest>[?artifactType=<type>]
+//
+// It always returns an OCI image index (never 404 for a valid digest) so a
+// spec-compliant client never has to fall back to the tag schema. The index's
+// `manifests` array holds a descriptor for every stored manifest whose
+// `subject` points at <digest>; it is empty when there are none. When
+// artifactType filtering is requested the OCI-Filters-Applied header is set.
+func (s *Server) handleReferrers(w http.ResponseWriter, r *http.Request) {
+	owner, name, ok := repoParts(w, r)
+	if !ok {
+		return
+	}
+	digest := r.PathValue("digest")
+	if !store.ValidDigest(digest) {
+		writeError(w, http.StatusBadRequest, CodeDigestInvalid, "invalid digest")
+		return
+	}
+	artifactType := r.URL.Query().Get("artifactType")
+	refs, err := s.cfg.Store.ListReferrers(owner, name, digest, artifactType)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	index := ociReferrersIndex{
+		SchemaVersion: 2,
+		MediaType:     "application/vnd.oci.image.index.v1+json",
+		Manifests:     refs,
+	}
+	body, err := json.Marshal(index)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeUnsupported, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+	if artifactType != "" {
+		w.Header().Set("OCI-Filters-Applied", "artifactType")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// ociReferrersIndex is the OCI image index returned by the referrers API. The
+// manifests array is always serialized (never null) thanks to the store
+// returning a non-nil empty slice.
+type ociReferrersIndex struct {
+	SchemaVersion int                `json:"schemaVersion"`
+	MediaType     string             `json:"mediaType"`
+	Manifests     []store.Descriptor `json:"manifests"`
 }
 
 func (s *Server) handleManifestDelete(w http.ResponseWriter, r *http.Request) {

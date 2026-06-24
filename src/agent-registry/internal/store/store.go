@@ -431,6 +431,35 @@ type ManifestInfo struct {
 	Digest    string `json:"digest"`
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
+	// Subject is the digest of the manifest this one refers to (OCI 1.1
+	// `subject` field), empty when the manifest is not a referrer.
+	Subject string `json:"subject,omitempty"`
+}
+
+// Descriptor is an OCI content descriptor as it appears in an image index's
+// `manifests` array. It's the shape the referrers API returns for each
+// referring manifest.
+type Descriptor struct {
+	MediaType    string            `json:"mediaType"`
+	Digest       string            `json:"digest"`
+	Size         int64             `json:"size"`
+	ArtifactType string            `json:"artifactType,omitempty"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
+}
+
+// manifestEnvelope is the subset of an OCI image manifest we parse to extract
+// the referrers-relevant fields (subject + artifactType + config mediaType +
+// annotations). Unknown fields are ignored.
+type manifestEnvelope struct {
+	MediaType    string `json:"mediaType"`
+	ArtifactType string `json:"artifactType"`
+	Config       struct {
+		MediaType string `json:"mediaType"`
+	} `json:"config"`
+	Subject *struct {
+		Digest string `json:"digest"`
+	} `json:"subject"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 func (s *Store) repoDir(owner, name string) string {
@@ -440,6 +469,13 @@ func (s *Store) repoDir(owner, name string) string {
 func (s *Store) manifestPath(owner, name, digest string) string {
 	h := digest[len("sha256:"):]
 	return filepath.Join(s.repoDir(owner, name), "manifests", h)
+}
+
+// referrerDir is the directory holding descriptors of all manifests whose
+// `subject` points at subjectDigest.
+func (s *Store) referrerDir(owner, name, subjectDigest string) string {
+	h := subjectDigest[len("sha256:"):]
+	return filepath.Join(s.repoDir(owner, name), "referrers", h)
 }
 
 func (s *Store) tagPath(owner, name, tag string) string {
@@ -469,6 +505,28 @@ func (s *Store) PutManifest(owner, name, ref, mediaType string, body []byte) (Ma
 		return ManifestInfo{}, err
 	}
 	info := ManifestInfo{Digest: digest, MediaType: mediaType, Size: int64(len(body))}
+
+	// If this manifest carries a `subject` (OCI 1.1), index it so the referrers
+	// API can return it later. buildx provenance/attestation manifests use this.
+	if env := parseManifestEnvelope(body); env.Subject != nil && ValidDigest(env.Subject.Digest) {
+		info.Subject = env.Subject.Digest
+		desc := Descriptor{
+			MediaType:    mediaType,
+			Digest:       digest,
+			Size:         int64(len(body)),
+			ArtifactType: referrerArtifactType(env),
+			Annotations:  env.Annotations,
+		}
+		db, err := json.Marshal(desc)
+		if err != nil {
+			return ManifestInfo{}, err
+		}
+		rp := filepath.Join(s.referrerDir(owner, name, env.Subject.Digest), digest[len("sha256:"):]+".json")
+		if err := writeFileAtomic(rp, db, 0o644); err != nil {
+			return ManifestInfo{}, err
+		}
+	}
+
 	if !ValidDigest(ref) {
 		if !ValidName(ref) {
 			return ManifestInfo{}, ErrInvalidName
@@ -478,6 +536,68 @@ func (s *Store) PutManifest(owner, name, ref, mediaType string, body []byte) (Ma
 		}
 	}
 	return info, nil
+}
+
+// parseManifestEnvelope best-effort parses a manifest body for referrers
+// fields. A parse failure yields a zero envelope (treated as "no subject").
+func parseManifestEnvelope(body []byte) manifestEnvelope {
+	var env manifestEnvelope
+	_ = json.Unmarshal(body, &env)
+	return env
+}
+
+// referrerArtifactType resolves the artifactType reported for a referring
+// manifest, per OCI 1.1: prefer the explicit top-level artifactType, else fall
+// back to the config descriptor's mediaType.
+func referrerArtifactType(env manifestEnvelope) string {
+	if env.ArtifactType != "" {
+		return env.ArtifactType
+	}
+	return env.Config.MediaType
+}
+
+// ListReferrers returns the descriptors of all manifests in the repo whose
+// `subject` points at subjectDigest. When artifactType is non-empty, only
+// descriptors with a matching ArtifactType are returned. The result is always
+// non-nil (possibly empty). Ordering is stable (by referrer digest).
+func (s *Store) ListReferrers(owner, name, subjectDigest, artifactType string) ([]Descriptor, error) {
+	if !ValidName(owner) || !ValidName(name) {
+		return nil, ErrInvalidName
+	}
+	if !ValidDigest(subjectDigest) {
+		return nil, ErrInvalidName
+	}
+	dir := s.referrerDir(owner, name, subjectDigest)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Descriptor{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	out := make([]Descriptor, 0, len(names))
+	for _, n := range names {
+		b, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			continue
+		}
+		var d Descriptor
+		if err := json.Unmarshal(b, &d); err != nil {
+			continue
+		}
+		if artifactType != "" && d.ArtifactType != artifactType {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }
 
 // GetManifest resolves ref (digest or tag) to the manifest body + metadata.
@@ -521,6 +641,14 @@ func (s *Store) GetManifest(owner, name, ref string) ([]byte, ManifestInfo, erro
 func (s *Store) DeleteManifest(owner, name, ref string) error {
 	if ValidDigest(ref) {
 		mp := s.manifestPath(owner, name, ref)
+		// Drop the referrer index entry first (best-effort) — needs the body to
+		// learn this manifest's subject.
+		if body, err := os.ReadFile(mp); err == nil {
+			if env := parseManifestEnvelope(body); env.Subject != nil && ValidDigest(env.Subject.Digest) {
+				rp := filepath.Join(s.referrerDir(owner, name, env.Subject.Digest), ref[len("sha256:"):]+".json")
+				_ = os.Remove(rp)
+			}
+		}
 		if err := os.Remove(mp); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return ErrNotFound
