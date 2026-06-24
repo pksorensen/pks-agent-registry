@@ -48,6 +48,42 @@ $USER_DATA_DIR/
 
 Everything is plain files — `tar`-friendly backups, no embedded database.
 
+## Install the CLI
+
+The `agent-registry` binary (server **and** admin CLI) ships as a prebuilt
+binary via the agentics.dk release store — no source checkout needed.
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://agentics.dk/install/agent-registry.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://agentics.dk/install/agent-registry.ps1 | iex
+```
+
+Pin a version or customize the install:
+
+```bash
+curl -fsSL https://agentics.dk/install/agent-registry.sh | VERSION=1.2.1 bash
+curl -fsSL https://agentics.dk/install/agent-registry.sh | INSTALL_DIR=~/bin NO_MODIFY_PATH=1 bash
+```
+
+The script detects your OS/architecture, verifies the sha256 checksum, installs
+`agent-registry` to `~/.local/bin` (or `%LOCALAPPDATA%\Agentics\bin` on Windows),
+and ensures it is on your `PATH`. Then administer a remote registry from your
+machine:
+
+```bash
+export REGISTRY_REMOTE=https://registry.agentics.dk REGISTRY_ADMIN_TOKEN=<token>
+agent-registry owner list
+```
+
+Full docs: <https://agentics.dk/tools/agent-registry>.
+
 ## Quick Start
 
 ```bash

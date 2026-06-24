@@ -20,8 +20,23 @@ func getEnv(key, def string) string {
 	return def
 }
 
+// version is stamped at build time via -ldflags "-X main.version=<semver>".
+// Defaults to "dev" for a plain `go build`/`go run` without the flag.
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
+
+	// Version probe — handled before any store/server setup so it works without
+	// a data dir or remote config.
+	if len(args) > 0 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Println("agent-registry", version)
+			return
+		}
+	}
+
 	wantsServer := len(args) == 0 || args[0] == "serve"
 
 	// Remote admin mode: REGISTRY_REMOTE set + a non-serve subcommand. The

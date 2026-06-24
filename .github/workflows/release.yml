@@ -105,3 +105,107 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ needs.release-please.outputs.version }}
           tag-name: ${{ needs.release-please.outputs.tag_name }}
+
+  # Cross-compile the standalone agent-registry CLI/server binary (Go) for every
+  # platform and publish it to the agentics.dk release store so
+  # `curl agentics.dk/install/agent-registry.sh | bash` serves it without GitHub
+  # access. The same binary is the admin CLI (`agent-registry owner add …`
+  # against REGISTRY_REMOTE) and the server. Pure Go cross-compile → ubuntu-latest
+  # builds all targets. The module lives under src/agent-registry/.
+  build-agent-registry-cli:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # attach binaries to the GitHub release
+      id-token: write     # mint a GitHub OIDC token to publish to agentics.dk (no PAT)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: src/agent-registry/go.sum
+
+      - name: Build all platforms
+        working-directory: src/agent-registry
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          mkdir -p dist
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os=${t%/*}; arch=${t#*/}
+            name="agent-registry_${os}_${arch}"
+            [ "$os" = windows ] && name="${name}.exe"
+            echo "building $name"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" -o "dist/${name}" .
+          done
+          ( cd dist && sha256sum agent-registry_* > "agent-registry_${VERSION}_checksums.txt" )
+          ls -la dist
+
+      - name: Attach binaries to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            src/agent-registry/dist/* \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+      # Publish the binaries to the agentics.dk release store. Auth is an ephemeral
+      # GitHub OIDC token (no PAT); agentics.dk verifies the audience + repo owner
+      # and auto-registers the (repo, component) product on first publish.
+      - name: Publish to agentics.dk release store
+        continue-on-error: true # best-effort until the first release lands
+        working-directory: src/agent-registry/dist
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          REC="agent-registry-${VERSION}"
+          OIDC=$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://agentics.dk/releases" | jq -r '.value')
+          [ -n "$OIDC" ] && [ "$OIDC" != "null" ] || { echo "::error::failed to mint OIDC token"; exit 1; }
+          curl -fsS -X POST -H "Authorization: Bearer ${OIDC}" -H "Content-Type: application/json" \
+            -d "{\"component\":\"agent-registry\",\"semver\":\"${VERSION}\",\"tagName\":\"${TAG}\"}" \
+            https://agentics.dk/api/releases >/dev/null
+          for f in agent-registry_* *checksums.txt; do
+            [ -f "$f" ] || continue
+            echo "uploading $f"
+            curl -fsS -X PUT -H "Authorization: Bearer ${OIDC}" \
+              --data-binary @"$f" \
+              "https://agentics.dk/api/releases/${REC}/attachments/$(basename "$f")"
+            echo
+          done
+          curl -fsS -X PUT -H "Authorization: Bearer ${OIDC}" \
+            "https://agentics.dk/api/releases/${REC}/publish" >/dev/null
+          echo "published ${REC}"
+
+      # Publish the /tools/agent-registry documentation from .agentics/tool on the
+      # same release cut as the binary, so the public docs can never drift behind
+      # the CLI. Same trusted-publishing model: an ephemeral OIDC token with
+      # audience https://agentics.dk/docs, gated by the same (repo, component).
+      - name: Publish tool docs to agentics.dk
+        continue-on-error: true # best-effort until the docs route is deployed
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          DOCS_DIR: .agentics/tool
+        run: |
+          set -euo pipefail
+          [ -d "$DOCS_DIR" ] || { echo "no $DOCS_DIR dir, skipping docs publish"; exit 0; }
+          OIDC=$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://agentics.dk/docs" | jq -r '.value')
+          [ -n "$OIDC" ] && [ "$OIDC" != "null" ] || { echo "::error::failed to mint docs OIDC token"; exit 1; }
+          FILES="[]"
+          while IFS= read -r -d '' f; do
+            REL="${f#"$DOCS_DIR"/}"
+            FILES=$(jq --arg p "$REL" --rawfile c "$f" '. + [{path:$p, content:$c}]' <<<"$FILES")
+          done < <(find "$DOCS_DIR" -name '*.md' -print0)
+          COUNT=$(jq 'length' <<<"$FILES")
+          [ "$COUNT" -gt 0 ] || { echo "no .md docs found, skipping"; exit 0; }
+          PAYLOAD=$(jq -n --arg component agent-registry --arg version "$VERSION" --argjson files "$FILES" \
+            '{component:$component, version:$version, files:$files}')
+          curl -fsS -X POST -H "Authorization: Bearer ${OIDC}" -H "Content-Type: application/json" \
+            -d "$PAYLOAD" https://agentics.dk/api/tools/docs
+          echo "published agent-registry docs v${VERSION} (${COUNT} files)"
