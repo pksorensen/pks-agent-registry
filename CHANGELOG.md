@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.2.1...agent-registry-v1.3.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** distribute agent-registry CLI via agentics.dk install + ship tool docs ([198f442](https://github.com/pksorensen/pks-agent-registry/commit/198f4428fa519c23c0ea3567843cb9323971aab2))
+
 ## [1.2.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.2.0...agent-registry-v1.2.1) (2026-06-24)
 
 
