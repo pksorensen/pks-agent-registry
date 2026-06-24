@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.3.0...agent-registry-v1.3.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **registry:** anchor the /v2/ base route so unknown endpoints 404 instead of 200-empty ([453268c](https://github.com/pksorensen/pks-agent-registry/commit/453268c62dae87c6ecb59136bf22d8205d76eb48))
+
 ## [1.3.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.2.1...agent-registry-v1.3.0) (2026-06-24)
 
 
