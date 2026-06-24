@@ -44,7 +44,12 @@ func (s *Server) routes() {
 	m := s.mux
 
 	// OCI v2 — base + catalog + per-repo endpoints.
-	m.HandleFunc("GET /v2/", s.requireOwnerAuth(s.handleV2Base))
+	// {$} anchors this to the EXACT /v2/ path (the OCI version-check ping). A
+	// bare "GET /v2/" is a subtree match that swallows every unmatched /v2/...
+	// GET and answers 200-empty instead of 404 — which silently broke clients
+	// probing endpoints we don't serve (this is what produced the referrers
+	// "decode index: EOF"). With the anchor, unmatched /v2/... GETs 404 cleanly.
+	m.HandleFunc("GET /v2/{$}", s.requireOwnerAuth(s.handleV2Base))
 	m.HandleFunc("GET /v2/_catalog", s.requireOwnerAuth(s.handleCatalog))
 
 	m.HandleFunc("GET /v2/{owner}/{name}/tags/list", s.requireOwnerRead(s.handleTagsList))

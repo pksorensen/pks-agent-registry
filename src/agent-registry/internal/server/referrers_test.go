@@ -178,3 +178,25 @@ func TestReferrersInvalidDigest(t *testing.T) {
 		t.Fatalf("invalid digest: got %d, want 400", rec.Code)
 	}
 }
+
+// TestV2BaseExactMatch guards the {$}-anchored base route: the exact /v2/ ping
+// returns 200, but an unmatched /v2/... GET must fall through to a clean 404 —
+// not the old 200-empty subtree match that made clients (and the referrers
+// probe) mis-decode the response.
+func TestV2BaseExactMatch(t *testing.T) {
+	s, st := newPermServer(t)
+	seedOwner(t, st, "agentics")
+
+	// Exact version-check ping → 200.
+	if rec := doAuth(t, s, http.MethodGet, "/v2/", "agentics", "pw"); rec.Code != http.StatusOK {
+		t.Fatalf("GET /v2/ : got %d, want 200", rec.Code)
+	}
+
+	// Unknown /v2/... endpoint → 404, NOT 200-empty.
+	for _, p := range []string{"/v2/agentics/app/unknownthing", "/v2/some/made/up/path"} {
+		rec := doAuth(t, s, http.MethodGet, p, "agentics", "pw")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s : got %d, want 404 (subtree catch-all regression)", p, rec.Code)
+		}
+	}
+}
