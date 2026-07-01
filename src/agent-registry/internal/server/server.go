@@ -2,8 +2,10 @@ package server
 
 import (
 	"crypto/subtle"
+	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/pksorensen/pks-agent-registry/internal/store"
@@ -105,8 +107,9 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		owner, ok := s.basicAuth(r)
-		if !ok {
+		owner, reason := s.basicAuth(r)
+		if owner == nil {
+			log.Printf("auth failed: reason=%s ip=%s method=%s path=%s", reason, clientIP(r), r.Method, r.URL.Path)
 			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
 			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 			return
@@ -124,6 +127,7 @@ func (s *Server) requireOwnerRead(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireOwnerAuth(func(w http.ResponseWriter, r *http.Request) {
 		owner := ownerFromContext(r.Context())
 		if !owner.CanPull(r.PathValue("owner"), r.PathValue("name")) {
+			log.Printf("pull denied: user=%q repo=%s/%s ip=%s", owner.Name, r.PathValue("owner"), r.PathValue("name"), clientIP(r))
 			writeError(w, http.StatusForbidden, CodeDenied, "not authorized to pull this repository")
 			return
 		}
@@ -197,10 +201,12 @@ func (s *Server) requireOwnerWrite(next http.HandlerFunc) http.HandlerFunc {
 		}
 		pathOwner := r.PathValue("owner")
 		if pathOwner != "" && pathOwner != owner.Name {
+			log.Printf("write denied: user=%q reason=namespace-mismatch target=%s ip=%s path=%s", owner.Name, pathOwner, clientIP(r), r.URL.Path)
 			writeError(w, http.StatusForbidden, CodeDenied, "cannot write to another owner's namespace")
 			return
 		}
 		if !owner.CanPush() {
+			log.Printf("write denied: user=%q reason=pull-only-credential ip=%s path=%s", owner.Name, clientIP(r), r.URL.Path)
 			writeError(w, http.StatusForbidden, CodeDenied, "this credential is not permitted to push")
 			return
 		}
@@ -222,6 +228,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		got := strings.TrimPrefix(h, "Bearer ")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) != 1 {
+			log.Printf("auth failed: reason=bad-admin-token ip=%s path=%s", clientIP(r), r.URL.Path)
 			http.Error(w, "invalid admin token", http.StatusUnauthorized)
 			return
 		}
@@ -229,17 +236,49 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) basicAuth(r *http.Request) (*store.Owner, bool) {
+// basicAuth authenticates the request's Basic credentials. On failure it returns a
+// nil owner plus a log-safe reason string (never the password itself). The reason
+// includes a whitespace hint because trailing newlines from copy-paste are the most
+// common cause of "the password is right but login fails" support cases.
+func (s *Server) basicAuth(r *http.Request) (*store.Owner, string) {
 	user, pass, ok := r.BasicAuth()
 	if !ok {
-		return nil, false
+		return nil, "no-credentials"
+	}
+	if _, err := s.cfg.Store.GetOwner(user); err != nil {
+		return nil, "unknown-owner user=" + strconv.Quote(user) + whitespaceHint(user, pass)
 	}
 	if !s.cfg.Store.CheckPassword(user, pass) {
-		return nil, false
+		return nil, "bad-password user=" + strconv.Quote(user) + whitespaceHint(user, pass)
 	}
 	o, err := s.cfg.Store.GetOwner(user)
 	if err != nil {
-		return nil, false
+		return nil, "owner-load-error user=" + strconv.Quote(user)
 	}
-	return o, true
+	return o, ""
+}
+
+// whitespaceHint flags credentials carrying leading/trailing whitespace (typically a
+// trailing newline pasted into a secret store) without revealing their contents.
+func whitespaceHint(user, pass string) string {
+	var hints []string
+	if user != strings.TrimSpace(user) {
+		hints = append(hints, "user-has-whitespace")
+	}
+	if pass != strings.TrimSpace(pass) {
+		hints = append(hints, "password-has-whitespace")
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return " hint=" + strings.Join(hints, ",")
+}
+
+// clientIP prefers the first X-Forwarded-For entry (the original client as seen by the
+// reverse proxy) and falls back to the TCP peer address.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	return r.RemoteAddr
 }
