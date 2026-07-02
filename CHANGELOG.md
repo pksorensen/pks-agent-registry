@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.3.1...agent-registry-v1.4.0) (2026-07-02)
+
+
+### Features
+
+* **registry:** GitHub OIDC federated auth — token service + trust bindings (ADR 0003) ([6bedf30](https://github.com/pksorensen/pks-agent-registry/commit/6bedf30bf8f7f1da4d65010819d8a5d220a41a57))
+* **registry:** log auth failures and permission denials ([22ead8a](https://github.com/pksorensen/pks-agent-registry/commit/22ead8ae08f2c7f70edd20c7722598af4dc725e3))
+
 ## [1.3.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.3.0...agent-registry-v1.3.1) (2026-06-24)
 
 
