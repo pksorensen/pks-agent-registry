@@ -1,14 +1,18 @@
 package server
 
 import (
+	"crypto/ecdsa"
 	"crypto/subtle"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
+	"github.com/pksorensen/pks-agent-registry/internal/token"
 )
 
 type Config struct {
@@ -20,6 +24,19 @@ type Config struct {
 	// TCP source IP falls in one of these CIDRs. Writes always require auth. Empty disables
 	// the bypass entirely. Typical value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8".
 	TrustedProxyCIDRs []*net.IPNet
+
+	// PublicURL is the externally reachable base URL of the registry
+	// (e.g. https://registry.agentics.dk). Setting it (together with TokenKey)
+	// arms the Distribution token service: /v2/ 401s additionally advertise
+	// `Bearer realm="<PublicURL>/token"` and the /token endpoint mints registry
+	// access tokens. Its hostname is both the token "service" and the required
+	// GitHub OIDC audience. Empty keeps the pre-token behavior (Basic only).
+	PublicURL string
+	// TokenKey signs registry access tokens (ES256); TokenKid identifies it.
+	TokenKey *ecdsa.PrivateKey
+	TokenKid string
+	// OIDC validates GitHub Actions tokens against federated trust bindings.
+	OIDC *ghoidc.Validator
 }
 
 type Server struct {
@@ -72,6 +89,10 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /v2/{owner}/{name}/blobs/uploads/{id}", s.requireOwnerWrite(s.handleUploadPut))
 	m.HandleFunc("DELETE /v2/{owner}/{name}/blobs/uploads/{id}", s.requireOwnerWrite(s.handleUploadAbort))
 
+	// Distribution token service (ADR 0003). Registered unconditionally; the
+	// handler answers 501 until PublicURL/TokenKey arm the feature.
+	m.HandleFunc("GET /token", s.handleToken)
+
 	// Management API — admin-token gated, designed for a future UI.
 	m.HandleFunc("GET /_mgmt/health", s.handleHealth)
 	m.HandleFunc("GET /_mgmt/owners", s.requireAdmin(s.handleMgmtOwnersList))
@@ -85,13 +106,22 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /_mgmt/repos/{owner}/{name}/tags", s.requireAdmin(s.handleMgmtTagsList))
 	m.HandleFunc("DELETE /_mgmt/repos/{owner}/{name}/tags/{tag}", s.requireAdmin(s.handleMgmtTagDelete))
 	m.HandleFunc("POST /_mgmt/gc", s.requireAdmin(s.handleMgmtGC))
+
+	// Federated trust bindings (ADR 0003).
+	m.HandleFunc("GET /_mgmt/federation", s.requireAdmin(s.handleMgmtFederationList))
+	m.HandleFunc("POST /_mgmt/federation", s.requireAdmin(s.handleMgmtFederationCreate))
+	m.HandleFunc("GET /_mgmt/federation/{id}", s.requireAdmin(s.handleMgmtFederationGet))
+	m.HandleFunc("DELETE /_mgmt/federation/{id}", s.requireAdmin(s.handleMgmtFederationDelete))
 }
 
 // --- middleware ---
 
 type ctxKey int
 
-const ctxKeyAuthUser ctxKey = 1
+const (
+	ctxKeyAuthUser   ctxKey = 1
+	ctxKeyAuthBearer ctxKey = 2
+)
 
 // requireOwnerAuth lets any valid owner credential through (read-only access).
 // When TrustedProxyCIDRs is configured, the request's TCP source IP is checked first:
@@ -107,16 +137,48 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
+		// Registry-minted bearer tokens (Distribution token flow, ADR 0003).
+		// The /_mgmt admin token is a different route tree; any Bearer here is
+		// expected to be one of ours.
+		if raw, err := bearerToken(r); err == nil && s.tokenAuthEnabled() {
+			owner, err := s.bearerPrincipal(raw)
+			if err != nil {
+				log.Printf("auth failed: reason=bad-bearer-token err=%q ip=%s method=%s path=%s", err, clientIP(r), r.Method, r.URL.Path)
+				s.writeChallenges(w, "")
+				writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
+				return
+			}
+			ctx := contextWithOwner(r.Context(), owner)
+			ctx = contextWithBearer(ctx)
+			next(w, r.WithContext(ctx))
+			return
+		}
 		owner, reason := s.basicAuth(r)
 		if owner == nil {
 			log.Printf("auth failed: reason=%s ip=%s method=%s path=%s", reason, clientIP(r), r.Method, r.URL.Path)
-			w.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+			s.writeChallenges(w, "")
 			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 			return
 		}
 		r = r.WithContext(contextWithOwner(r.Context(), owner))
 		next(w, r)
 	}
+}
+
+// writeChallenges emits the WWW-Authenticate challenge(s) for a /v2/ 401.
+// With the token service armed, both Bearer (preferred by docker/oras/crane)
+// and Basic (legacy clients, raw curl) are advertised; the Bearer challenge
+// carries the needed scope on insufficient-scope denials so conforming
+// clients transparently re-fetch a correctly scoped token.
+func (s *Server) writeChallenges(w http.ResponseWriter, scope string) {
+	if s.tokenAuthEnabled() {
+		c := fmt.Sprintf("Bearer realm=%q,service=%q", s.cfg.PublicURL+"/token", s.service())
+		if scope != "" {
+			c += fmt.Sprintf(",scope=%q,error=%q", scope, "insufficient_scope")
+		}
+		w.Header().Add("WWW-Authenticate", c)
+	}
+	w.Header().Add("WWW-Authenticate", `Basic realm="registry"`)
 }
 
 // requireOwnerRead enforces per-repository pull scopes on top of authentication.
@@ -128,6 +190,13 @@ func (s *Server) requireOwnerRead(next http.HandlerFunc) http.HandlerFunc {
 		owner := ownerFromContext(r.Context())
 		if !owner.CanPull(r.PathValue("owner"), r.PathValue("name")) {
 			log.Printf("pull denied: user=%q repo=%s/%s ip=%s", owner.Name, r.PathValue("owner"), r.PathValue("name"), clientIP(r))
+			// Bearer principals get a 401 with the needed scope so token-flow
+			// clients re-fetch a correctly scoped token; Basic keeps the 403.
+			if isBearerAuth(r.Context()) {
+				s.writeChallenges(w, fmt.Sprintf("repository:%s/%s:pull", r.PathValue("owner"), r.PathValue("name")))
+				writeError(w, http.StatusUnauthorized, CodeUnauthorized, "insufficient scope for this repository")
+				return
+			}
 			writeError(w, http.StatusForbidden, CodeDenied, "not authorized to pull this repository")
 			return
 		}
@@ -202,16 +271,31 @@ func (s *Server) requireOwnerWrite(next http.HandlerFunc) http.HandlerFunc {
 		pathOwner := r.PathValue("owner")
 		if pathOwner != "" && pathOwner != owner.Name {
 			log.Printf("write denied: user=%q reason=namespace-mismatch target=%s ip=%s path=%s", owner.Name, pathOwner, clientIP(r), r.URL.Path)
-			writeError(w, http.StatusForbidden, CodeDenied, "cannot write to another owner's namespace")
+			s.denyWrite(w, r, "cannot write to another owner's namespace")
 			return
 		}
 		if !owner.CanPush() {
 			log.Printf("write denied: user=%q reason=pull-only-credential ip=%s path=%s", owner.Name, clientIP(r), r.URL.Path)
-			writeError(w, http.StatusForbidden, CodeDenied, "this credential is not permitted to push")
+			s.denyWrite(w, r, "this credential is not permitted to push")
 			return
 		}
 		next(w, r)
 	})
+}
+
+// denyWrite rejects a write: 401 + scoped Bearer challenge for token-flow
+// clients (spec-conform re-auth), 403 for Basic principals (today's behavior).
+func (s *Server) denyWrite(w http.ResponseWriter, r *http.Request, msg string) {
+	if isBearerAuth(r.Context()) {
+		if o, n := r.PathValue("owner"), r.PathValue("name"); o != "" && n != "" {
+			s.writeChallenges(w, fmt.Sprintf("repository:%s/%s:pull,push", o, n))
+		} else {
+			s.writeChallenges(w, "")
+		}
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, msg)
+		return
+	}
+	writeError(w, http.StatusForbidden, CodeDenied, msg)
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -244,6 +328,16 @@ func (s *Server) basicAuth(r *http.Request) (*store.Owner, string) {
 	user, pass, ok := r.BasicAuth()
 	if !ok {
 		return nil, "no-credentials"
+	}
+	// A JWT-shaped password is a GitHub OIDC credential (federated trust
+	// binding), not an owner password — belt-and-braces for clients that
+	// ignore the Bearer challenge and replay Basic on /v2/ directly.
+	if s.tokenAuthEnabled() && s.cfg.OIDC != nil && token.LooksLikeJWT(pass) {
+		p, ok := s.resolveFederated(pass)
+		if !ok {
+			return nil, "federated-token-rejected"
+		}
+		return p.asOwner(), ""
 	}
 	if _, err := s.cfg.Store.GetOwner(user); err != nil {
 		return nil, "unknown-owner user=" + strconv.Quote(user) + whitespaceHint(user, pass)

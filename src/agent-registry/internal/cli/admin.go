@@ -24,6 +24,11 @@ type Admin interface {
 	ListTags(owner, name string) ([]string, error)
 	DeleteTag(owner, name, tag string) error
 
+	// Federated trust bindings (ADR 0003)
+	CreateTrustBinding(b *store.TrustBinding) (*store.TrustBinding, error)
+	ListTrustBindings() ([]*store.TrustBinding, error)
+	DeleteTrustBinding(id string) error
+
 	// Maintenance
 	GC() ([]string, error)
 }

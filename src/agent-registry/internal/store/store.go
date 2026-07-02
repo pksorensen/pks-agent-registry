@@ -30,7 +30,7 @@ type Store struct {
 }
 
 func New(dataDir string) (*Store, error) {
-	for _, sub := range []string{"blobs", "uploads", "repos", "owners"} {
+	for _, sub := range []string{"blobs", "uploads", "repos", "owners", "federation"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0o755); err != nil {
 			return nil, err
 		}

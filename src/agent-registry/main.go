@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/pksorensen/pks-agent-registry/internal/cli"
+	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/remote"
 	"github.com/pksorensen/pks-agent-registry/internal/server"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
+	"github.com/pksorensen/pks-agent-registry/internal/token"
 )
 
 func getEnv(key, def string) string {
@@ -18,6 +21,24 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// resolvePublicURL returns the registry's externally reachable base URL:
+// REGISTRY_PUBLIC_URL, else the Coolify-injected COOLIFY_URL / COOLIFY_FQDN
+// (both may be comma-separated when multiple domains are attached; FQDN may
+// lack a scheme). Empty means the token service stays disarmed.
+func resolvePublicURL() string {
+	for _, key := range []string{"REGISTRY_PUBLIC_URL", "COOLIFY_URL", "COOLIFY_FQDN"} {
+		v := strings.TrimSpace(strings.Split(os.Getenv(key), ",")[0])
+		if v == "" {
+			continue
+		}
+		if !strings.Contains(v, "://") {
+			v = "https://" + v
+		}
+		return strings.TrimRight(v, "/")
+	}
+	return ""
 }
 
 // version is stamped at build time via -ldflags "-X main.version=<semver>".
@@ -81,14 +102,36 @@ func main() {
 		}
 	}
 
-	srv := server.New(server.Config{
+	cfg := server.Config{
 		Addr:              addr,
 		AdminToken:        adminToken,
 		Store:             st,
 		TrustedProxyCIDRs: trustedCIDRs,
-	})
+	}
 
-	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d)", addr, dataDir, adminToken != "", len(trustedCIDRs))
+	// REGISTRY_PUBLIC_URL arms the Distribution token service + GitHub OIDC
+	// federation (ADR 0003). Its hostname becomes the token "service" and the
+	// required OIDC audience. Falls back to the Coolify-injected app URL
+	// (COOLIFY_URL, then COOLIFY_FQDN) so proxied deployments get token auth
+	// without extra configuration. Unset everywhere keeps Basic-only auth.
+	if publicURL := resolvePublicURL(); publicURL != "" {
+		key, kid, err := token.LoadOrCreateSigningKey(dataDir)
+		if err != nil {
+			log.Fatalf("token signing key: %v", err)
+		}
+		audience := publicURL
+		if u, err := url.Parse(publicURL); err == nil && u.Host != "" {
+			audience = u.Host
+		}
+		cfg.PublicURL = publicURL
+		cfg.TokenKey = key
+		cfg.TokenKid = kid
+		cfg.OIDC = ghoidc.New(getEnv("REGISTRY_GH_OIDC_ISSUER", ghoidc.DefaultIssuer), audience)
+	}
+
+	srv := server.New(cfg)
+
+	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d, token-auth=%t)", addr, dataDir, adminToken != "", len(trustedCIDRs), cfg.PublicURL != "")
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

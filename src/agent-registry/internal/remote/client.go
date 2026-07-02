@@ -260,6 +260,58 @@ func (c *Client) DeleteTag(owner, name, tag string) error {
 	return c.expect(resp, nil, http.StatusNoContent)
 }
 
+// -------- Federated trust bindings (ADR 0003) --------
+
+type bindingsListResp struct {
+	Bindings []*store.TrustBinding `json:"bindings"`
+}
+
+func (c *Client) CreateTrustBinding(b *store.TrustBinding) (*store.TrustBinding, error) {
+	perms := b.Permissions
+	if perms == nil {
+		perms = &store.Permissions{}
+	}
+	resp, err := c.do(http.MethodPost, "/_mgmt/federation", map[string]any{
+		"description":       b.Description,
+		"repository":        b.Repository,
+		"repositoryId":      b.RepositoryID,
+		"repositoryOwnerId": b.RepositoryOwnerID,
+		"environment":       b.Environment,
+		"owner":             b.Owner,
+		"push":              perms.Push,
+		"pullScopes":        perms.PullScopes,
+		"createdBy":         b.CreatedBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var created store.TrustBinding
+	if err := c.expect(resp, &created, http.StatusCreated); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *Client) ListTrustBindings() ([]*store.TrustBinding, error) {
+	resp, err := c.do(http.MethodGet, "/_mgmt/federation", nil)
+	if err != nil {
+		return nil, err
+	}
+	var body bindingsListResp
+	if err := c.expect(resp, &body, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return body.Bindings, nil
+}
+
+func (c *Client) DeleteTrustBinding(id string) error {
+	resp, err := c.do(http.MethodDelete, "/_mgmt/federation/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	return c.expect(resp, nil, http.StatusNoContent)
+}
+
 // -------- GC --------
 
 type gcResp struct {
@@ -294,5 +346,8 @@ var _ interface {
 	DeleteRepo(owner, name string) error
 	ListTags(owner, name string) ([]string, error)
 	DeleteTag(owner, name, tag string) error
+	CreateTrustBinding(b *store.TrustBinding) (*store.TrustBinding, error)
+	ListTrustBindings() ([]*store.TrustBinding, error)
+	DeleteTrustBinding(id string) error
 	GC() ([]string, error)
 } = (*Client)(nil)

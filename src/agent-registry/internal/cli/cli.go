@@ -27,6 +27,8 @@ func Run(adm Admin, args []string) int {
 		return runRepo(adm, args[1:])
 	case "tag":
 		return runTag(adm, args[1:])
+	case "federation":
+		return runFederation(adm, args[1:])
 	case "gc":
 		return runGC(adm)
 	default:
@@ -55,6 +57,14 @@ Usage:
   agent-registry repo delete <owner>/<name>           Delete a repo (all manifests + tags)
   agent-registry tag list <owner>/<name>              List tags
   agent-registry tag delete <owner>/<name>:<tag>      Delete a tag
+  agent-registry federation add <github-org/repo> [--environment <env>] [--pull <scope>]...
+                                [--push --owner <registry-owner>] [--repository-id <id>] [--description <text>]
+                                                      Allow a GitHub repo (optionally one environment) to authenticate
+                                                      with its Actions OIDC token — like a GitHub/Azure federated
+                                                      credential. --pull grants scope globs; --push allows pushing
+                                                      to --owner's namespace. Requires REGISTRY_PUBLIC_URL on serve.
+  agent-registry federation list                      List trust bindings (id, repo[@env], pinned, grants)
+  agent-registry federation remove <id>               Remove a trust binding
   agent-registry gc                                   Remove blobs not referenced by any manifest
   agent-registry help                                 Show this help
 
@@ -62,7 +72,10 @@ Environment:
   USER_DATA_DIR           Persistent storage path (default /data)
   REGISTRY_ADDR           Listen address for serve (default :5000)
   REGISTRY_ADMIN_TOKEN    Bearer token for /_mgmt/ API (mgmt API disabled if unset)
-  REGISTRY_PASSWORD       Used as the password when stdin is not a TTY`)
+  REGISTRY_PASSWORD       Used as the password when stdin is not a TTY
+  REGISTRY_PUBLIC_URL     Public base URL (e.g. https://registry.agentics.dk). Arms the
+                          Distribution token service + GitHub OIDC federation (ADR 0003)
+  REGISTRY_GH_OIDC_ISSUER Override the GitHub Actions OIDC issuer (tests/GHES)`)
 }
 
 func runOwner(adm Admin, args []string) int {
