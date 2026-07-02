@@ -117,6 +117,28 @@ func TestV2ChallengeAdvertisesBearerAndBasic(t *testing.T) {
 	}
 }
 
+// The initial anonymous 401 on a repository route must advertise the pull
+// scope so challenge-driven clients (e.g. `az acr import`) request a correctly
+// scoped token on the first try rather than a scope-less one that is denied.
+func TestAnonymousRepoChallengeCarriesPullScope(t *testing.T) {
+	s, _, _, _ := newTokenServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v2/agentics/pks-agent-marketplace/manifests/latest", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", rec.Code)
+	}
+	var bearer string
+	for _, c := range rec.Result().Header.Values("WWW-Authenticate") {
+		if strings.HasPrefix(c, "Bearer ") {
+			bearer = c
+		}
+	}
+	if !strings.Contains(bearer, `scope="repository:agentics/pks-agent-marketplace:pull"`) {
+		t.Fatalf("anonymous repo challenge missing pull scope: %q", bearer)
+	}
+}
+
 func TestV2ChallengeBasicOnlyWhenTokenAuthDisarmed(t *testing.T) {
 	s, _ := newPermServer(t) // no PublicURL/TokenKey
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)

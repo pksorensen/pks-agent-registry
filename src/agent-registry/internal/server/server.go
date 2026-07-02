@@ -144,7 +144,7 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 			owner, err := s.bearerPrincipal(raw)
 			if err != nil {
 				log.Printf("auth failed: reason=bad-bearer-token err=%q ip=%s method=%s path=%s", err, clientIP(r), r.Method, r.URL.Path)
-				s.writeChallenges(w, "")
+				s.writeChallenges(w, challengeScope(r))
 				writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 				return
 			}
@@ -156,13 +156,32 @@ func (s *Server) requireOwnerAuth(next http.HandlerFunc) http.HandlerFunc {
 		owner, reason := s.basicAuth(r)
 		if owner == nil {
 			log.Printf("auth failed: reason=%s ip=%s method=%s path=%s", reason, clientIP(r), r.Method, r.URL.Path)
-			s.writeChallenges(w, "")
+			s.writeChallenges(w, challengeScope(r))
 			writeError(w, http.StatusUnauthorized, CodeUnauthorized, "authentication required")
 			return
 		}
 		r = r.WithContext(contextWithOwner(r.Context(), owner))
 		next(w, r)
 	}
+}
+
+// challengeScope derives the Distribution token scope for a repository request
+// from its path and method, e.g. "repository:agentics/app:pull". It is emitted
+// in the *initial* anonymous 401 challenge so challenge-driven clients (notably
+// `az acr import`, which does not synthesise the scope from the repo path the
+// way the docker CLI does) request a correctly-scoped token on the first try
+// instead of a scope-less one that the data plane then denies. Returns "" for
+// non-repository routes (e.g. /v2/ base), which keeps their challenge scopeless.
+func challengeScope(r *http.Request) string {
+	owner, name := r.PathValue("owner"), r.PathValue("name")
+	if owner == "" || name == "" {
+		return ""
+	}
+	action := "pull"
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		action = "pull,push"
+	}
+	return fmt.Sprintf("repository:%s/%s:%s", owner, name, action)
 }
 
 // writeChallenges emits the WWW-Authenticate challenge(s) for a /v2/ 401.
