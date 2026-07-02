@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.0...agent-registry-v1.4.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **server:** advertise pull scope in the initial anonymous 401 challenge ([95fb12c](https://github.com/pksorensen/pks-agent-registry/commit/95fb12c34de55b5882c78c1299ba7f50e4fe3f43))
+
 ## [1.4.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.3.1...agent-registry-v1.4.0) (2026-07-02)
 
 
