@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/pksorensen/pks-agent-registry/internal/store"
 )
@@ -208,6 +209,9 @@ func (s *Server) handleBlobHead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.Header().Set("Docker-Content-Digest", digest)
+	// Advertise range support so clients that HEAD before GET (e.g. the ACR
+	// server-side importer) know they may issue ranged reads.
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -223,9 +227,21 @@ func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.Header().Set("Docker-Content-Digest", digest)
 	w.Header().Set("Content-Type", "application/octet-stream")
+
+	// Prefer http.ServeContent so Range requests are honoured with a proper
+	// 206 Partial Content + Content-Range. `az acr import` copies blobs with
+	// ranged GETs and fails ("want PartialContent: got OK") if the server
+	// always returns 200 with the full body. The file store hands back an
+	// *os.File, which is an io.ReadSeeker; fall back to a plain copy otherwise.
+	if rs, ok := rc.(io.ReadSeeker); ok {
+		// Empty name + octet-stream Content-Type already set → no sniffing;
+		// zero modtime disables Last-Modified/If-Modified-Since handling.
+		http.ServeContent(w, r, "", time.Time{}, rs)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	_, _ = io.Copy(w, rc)
 }
 
