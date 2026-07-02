@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.1...agent-registry-v1.4.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* **server:** honour HTTP Range on blob GET for server-side import ([54db462](https://github.com/pksorensen/pks-agent-registry/commit/54db462ec11b8faea45d2768f5de2ddf744453fb))
+
 ## [1.4.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.0...agent-registry-v1.4.1) (2026-07-02)
 
 
