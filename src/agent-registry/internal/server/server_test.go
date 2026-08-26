@@ -71,7 +71,7 @@ func TestExternalClientViaProxyStillRequiresAuth(t *testing.T) {
 	// client behind it is a public IP. The bypass MUST NOT trigger.
 	s := newTestServer(t, []string{"10.0.0.0/8"})
 	req := httptest.NewRequest(http.MethodGet, "/v2/", nil)
-	req.RemoteAddr = "10.0.8.2:54321"             // proxy → registry hop
+	req.RemoteAddr = "10.0.8.2:54321"                // proxy → registry hop
 	req.Header.Set("X-Forwarded-For", "203.0.113.7") // public-internet client
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)

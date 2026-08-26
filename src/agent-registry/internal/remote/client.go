@@ -273,10 +273,13 @@ func (c *Client) CreateTrustBinding(b *store.TrustBinding) (*store.TrustBinding,
 	}
 	resp, err := c.do(http.MethodPost, "/_mgmt/federation", map[string]any{
 		"description":       b.Description,
+		"kind":              b.Kind,
 		"repository":        b.Repository,
 		"repositoryId":      b.RepositoryID,
 		"repositoryOwnerId": b.RepositoryOwnerID,
 		"environment":       b.Environment,
+		"username":          b.Username,
+		"group":             b.Group,
 		"owner":             b.Owner,
 		"push":              perms.Push,
 		"pullScopes":        perms.PullScopes,

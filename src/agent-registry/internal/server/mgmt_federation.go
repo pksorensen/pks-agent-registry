@@ -32,11 +32,15 @@ func (s *Server) handleMgmtFederationList(w http.ResponseWriter, r *http.Request
 }
 
 type bindingCreateReq struct {
-	Description       string   `json:"description,omitempty"`
-	Repository        string   `json:"repository"`
+	Description string `json:"description,omitempty"`
+	// Kind is "github" (default, back-compatible) or "keycloak".
+	Kind              string   `json:"kind,omitempty"`
+	Repository        string   `json:"repository,omitempty"`
 	RepositoryID      string   `json:"repositoryId,omitempty"`
 	RepositoryOwnerID string   `json:"repositoryOwnerId,omitempty"`
 	Environment       string   `json:"environment,omitempty"`
+	Username          string   `json:"username,omitempty"`
+	Group             string   `json:"group,omitempty"`
 	Owner             string   `json:"owner,omitempty"`
 	Push              bool     `json:"push"`
 	PullScopes        []string `json:"pullScopes,omitempty"`
@@ -49,8 +53,28 @@ func (s *Server) handleMgmtFederationCreate(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Repository == "" {
-		http.Error(w, "repository required", http.StatusBadRequest)
+	kind := req.Kind
+	if kind == "" {
+		kind = store.KindGitHub
+	}
+	issuer := ghoidc.DefaultIssuer
+	switch kind {
+	case store.KindGitHub:
+		if req.Repository == "" {
+			http.Error(w, "repository required", http.StatusBadRequest)
+			return
+		}
+	case store.KindKeycloak:
+		// The issuer is the registry's own configured realm, never something
+		// the caller supplies: an admin token must not be able to point a
+		// binding at an issuer this registry does not otherwise trust.
+		if s.cfg.Keycloak == nil {
+			http.Error(w, "interactive sign-in is not configured (REGISTRY_KEYCLOAK_ISSUER unset)", http.StatusBadRequest)
+			return
+		}
+		issuer = s.cfg.Keycloak.IssuerURL
+	default:
+		http.Error(w, "unknown binding kind", http.StatusBadRequest)
 		return
 	}
 	if req.Push {
@@ -65,17 +89,20 @@ func (s *Server) handleMgmtFederationCreate(w http.ResponseWriter, r *http.Reque
 	}
 	b, err := s.cfg.Store.CreateTrustBinding(&store.TrustBinding{
 		Description:       req.Description,
-		Issuer:            ghoidc.DefaultIssuer,
+		Kind:              req.Kind,
+		Issuer:            issuer,
 		Repository:        req.Repository,
 		RepositoryID:      req.RepositoryID,
 		RepositoryOwnerID: req.RepositoryOwnerID,
 		Environment:       req.Environment,
+		Username:          req.Username,
+		Group:             req.Group,
 		Owner:             req.Owner,
 		Permissions:       &store.Permissions{Push: req.Push, PullScopes: req.PullScopes},
 		CreatedBy:         req.CreatedBy,
 	})
 	if errors.Is(err, store.ErrInvalidName) {
-		http.Error(w, "invalid repository or owner name", http.StatusBadRequest)
+		http.Error(w, "invalid repository, username or owner name", http.StatusBadRequest)
 		return
 	}
 	if err != nil {

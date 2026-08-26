@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pksorensen/pks-agent-registry/internal/oidc"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
 	"github.com/pksorensen/pks-agent-registry/internal/token"
 )
@@ -46,11 +47,21 @@ func (p *principal) asOwner() *store.Owner {
 }
 
 // resolvePrincipal validates basic-auth-carried credentials. The password is
-// either a static owner password (bcrypt) or a GitHub Actions OIDC JWT that
-// must match a trust binding; the username is ignored for OIDC credentials.
+// either a static owner password (bcrypt) or an OIDC JWT that must match a
+// trust binding; the username is ignored for OIDC credentials.
+//
+// Which validator gets the JWT is decided by its *unverified* iss claim. That
+// is only a routing decision — the chosen validator then re-reads iss from the
+// signed payload and rejects the token if it does not match its own issuer, so
+// a forged iss buys nothing but a trip to the wrong validator.
 func (s *Server) resolvePrincipal(user, pass string) (*principal, bool) {
-	if s.tokenAuthEnabled() && s.cfg.OIDC != nil && token.LooksLikeJWT(pass) {
-		return s.resolveFederated(pass)
+	if s.tokenAuthEnabled() && token.LooksLikeJWT(pass) {
+		switch iss := oidc.UnverifiedIssuer(pass); {
+		case s.cfg.Keycloak != nil && iss == s.cfg.Keycloak.IssuerURL:
+			return s.resolveKeycloak(pass)
+		case s.cfg.OIDC != nil:
+			return s.resolveFederated(pass)
+		}
 	}
 	if !s.cfg.Store.CheckPassword(user, pass) {
 		return nil, false
@@ -95,6 +106,45 @@ func (s *Server) resolveFederated(rawJWT string) (*principal, bool) {
 		return &principal{sub: b.PrincipalName(), ownerNS: b.Owner, perms: perms}, true
 	}
 	log.Printf("federation: no trust binding matches repository=%q id=%q env=%q", claims.Repository, claims.RepositoryID, claims.Environment)
+	return nil, false
+}
+
+// resolveKeycloak authenticates a person who signed in with
+// `agent-registry login` (ADR 0004). The principal is named after the human,
+// not the binding, so the audit trail says who pulled — a group binding that
+// three people share still logs three distinct subjects.
+func (s *Server) resolveKeycloak(rawJWT string) (*principal, bool) {
+	claims, err := s.cfg.Keycloak.Validate(rawJWT, time.Now())
+	if err != nil {
+		log.Printf("federation: keycloak token rejected: %v", err)
+		return nil, false
+	}
+	bindings, err := s.cfg.Store.ListTrustBindings()
+	if err != nil {
+		log.Printf("federation: list bindings: %v", err)
+		return nil, false
+	}
+	for _, b := range bindings {
+		if !b.MatchesUser(claims.Sub, claims.PreferredUsername, claims.HasGroup) {
+			continue
+		}
+		if !b.Pinned() && b.Pinnable() {
+			if err := s.cfg.Store.PinTrustBindingSubject(b.ID, claims.Sub); err != nil {
+				log.Printf("federation: pin binding %s: %v", b.ID, err)
+			} else {
+				log.Printf("federation: binding %s pinned to subject=%s (%s)", b.ID, claims.Sub, claims.PreferredUsername)
+			}
+		}
+		perms := b.Permissions
+		if perms == nil {
+			// CreateTrustBinding forbids this; guard anyway so a hand-edited
+			// binding file can never grant legacy full access.
+			perms = &store.Permissions{}
+		}
+		log.Printf("federation: authenticated %s (binding %s, %s)", claims.Identity(), b.ID, b.Label())
+		return &principal{sub: claims.Identity(), ownerNS: b.Owner, perms: perms}, true
+	}
+	log.Printf("federation: no trust binding matches keycloak user %q (groups=%v)", claims.PreferredUsername, claims.Groups)
 	return nil, false
 }
 

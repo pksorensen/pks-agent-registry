@@ -10,6 +10,7 @@ import (
 
 	"github.com/pksorensen/pks-agent-registry/internal/cli"
 	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
+	"github.com/pksorensen/pks-agent-registry/internal/kcoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/remote"
 	"github.com/pksorensen/pks-agent-registry/internal/server"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
@@ -41,6 +42,23 @@ func resolvePublicURL() string {
 	return ""
 }
 
+// Defaults for the interactive sign-in the CLI performs. The client is a
+// public OAuth client, so none of these is a secret. offline_access is what
+// keeps the Docker credential helper working past Keycloak's SSO idle
+// timeout — without it the helper stops refreshing after ~30 minutes.
+//
+// One client per tool, not one shared across the family: `agent-registry-cli`
+// talks to this registry and nothing else, which is what lets the audience
+// mapper sit on the client itself rather than on a scope the CLI has to
+// remember to request. It also means this tool's sessions can be revoked
+// without signing the user out of every other one, and `azp` in the registry's
+// logs names the actual software that pulled.
+const (
+	defaultKeycloakIssuer   = "https://login.agentics.dk/realms/agentics"
+	defaultKeycloakClientID = "agent-registry-cli"
+	defaultKeycloakScopes   = "openid offline_access"
+)
+
 // version is stamped at build time via -ldflags "-X main.version=<semver>".
 // Defaults to "dev" for a plain `go build`/`go run` without the flag.
 var version = "dev"
@@ -56,6 +74,14 @@ func main() {
 			fmt.Println("agent-registry", version)
 			return
 		}
+	}
+
+	// Interactive sign-in and the docker credential helper come first. They run
+	// on a developer's machine, where there is no data directory to open and no
+	// admin token to demand — and where argv[0] may be the
+	// docker-credential-agentics symlink rather than a subcommand at all.
+	if code, handled := cli.RunAuth(args); handled {
+		os.Exit(code)
 	}
 
 	wantsServer := len(args) == 0 || args[0] == "serve"
@@ -127,11 +153,43 @@ func main() {
 		cfg.TokenKey = key
 		cfg.TokenKid = kid
 		cfg.OIDC = ghoidc.New(getEnv("REGISTRY_GH_OIDC_ISSUER", ghoidc.DefaultIssuer), audience)
+
+		// Interactive human sign-in (ADR 0004): `agent-registry login` mints a
+		// Keycloak token, and the registry accepts it as a second credential
+		// type at /token. REGISTRY_KEYCLOAK_ISSUER overrides the issuer for
+		// anyone running this registry against their own authorization server;
+		// it defaults to ours rather than leaving sign-in disarmed, because a
+		// deployment that inherits the default still grants nothing to anyone
+		// without a trust binding. Set it to "off" to disarm deliberately.
+		issuer := strings.TrimRight(getEnv("REGISTRY_KEYCLOAK_ISSUER", defaultKeycloakIssuer), "/")
+		if issuer != "" && !strings.EqualFold(issuer, "off") {
+			kcAudience := getEnv("REGISTRY_KEYCLOAK_AUDIENCE", audience)
+			kc := kcoidc.New(issuer, kcAudience)
+
+			// REGISTRY_KEYCLOAK_ACCEPT_AZP relaxes the audience check to an azp
+			// match, for a realm nobody has added an audience mapper to. Off
+			// unless set: see kcoidc.AcceptAuthorizedParty for why it must not
+			// be the default.
+			acceptAZP := strings.TrimSpace(os.Getenv("REGISTRY_KEYCLOAK_ACCEPT_AZP"))
+			kc.AcceptAuthorizedParty(acceptAZP)
+			if acceptAZP != "" {
+				log.Printf("keycloak: audience check RELAXED — tokens with azp=%q are accepted without aud=%q", acceptAZP, kcAudience)
+			}
+
+			cfg.Keycloak = kc
+			cfg.Login = server.LoginDiscovery{
+				Issuer:   issuer,
+				ClientID: getEnv("REGISTRY_KEYCLOAK_CLIENT_ID", defaultKeycloakClientID),
+				Audience: kcAudience,
+				Scopes:   strings.Fields(getEnv("REGISTRY_KEYCLOAK_SCOPES", defaultKeycloakScopes)),
+				Registry: audience,
+			}
+		}
 	}
 
 	srv := server.New(cfg)
 
-	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d, token-auth=%t)", addr, dataDir, adminToken != "", len(trustedCIDRs), cfg.PublicURL != "")
+	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d, token-auth=%t, keycloak-login=%t)", addr, dataDir, adminToken != "", len(trustedCIDRs), cfg.PublicURL != "", cfg.Keycloak != nil)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

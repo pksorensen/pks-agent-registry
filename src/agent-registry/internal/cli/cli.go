@@ -21,6 +21,11 @@ func Run(adm Admin, args []string) int {
 	case "help", "-h", "--help":
 		printHelp()
 		return 0
+	case "login", "logout", "whoami", "token", "docker-credential", "credential-helper":
+		// Dispatched in main before the store opens; reaching here means the
+		// dispatcher was bypassed.
+		code, _ := RunAuth(args)
+		return code
 	case "owner":
 		return runOwner(adm, args[1:])
 	case "repo":
@@ -42,6 +47,20 @@ func printHelp() {
 	fmt.Println(`agent-registry — OCI registry + admin CLI
 
 Usage:
+  agent-registry login [<registry>] [--no-helper] [--helper-dir <dir>]
+                                                      Sign in with your Agentics account (device code in the
+                                                      browser). Defaults to registry.agentics.dk. Offers to
+                                                      register itself as docker's credential helper so pulls
+                                                      just work; --no-helper prints the commands instead.
+  agent-registry logout [<registry>]                  End the session and forget the credential
+  agent-registry whoami [<registry>]                  Show who you are signed in as, and whether docker knows
+  agent-registry token [<registry>]                   Print a fresh access token (for docker login -u oauth2 -p ...)
+  agent-registry credential-helper install|uninstall|status [<registry>] [--helper-dir <dir>]
+                                                      Manage docker's credHelpers entry and the
+                                                      docker-credential-agentics binary
+  agent-registry docker-credential <get|store|erase|list>
+                                                      The docker credential-helper protocol (docker calls this)
+
   agent-registry serve                                Run the registry server (default)
   agent-registry owner add <name> [--no-push] [--pull <scope>]...
                                                       Create an owner (password from REGISTRY_PASSWORD or stdin).
@@ -63,7 +82,16 @@ Usage:
                                                       with its Actions OIDC token — like a GitHub/Azure federated
                                                       credential. --pull grants scope globs; --push allows pushing
                                                       to --owner's namespace. Requires REGISTRY_PUBLIC_URL on serve.
-  agent-registry federation list                      List trust bindings (id, repo[@env], pinned, grants)
+  agent-registry federation add-user <keycloak-username> [--pull <scope>]... [--push --owner <registry-owner>]
+                                [--description <text>]
+                                                      Allow one person to authenticate with 'agent-registry login'
+                                                      instead of an owner password. The binding pins to their
+                                                      Keycloak subject on first use (TOFU).
+  agent-registry federation add-group <keycloak-group> [--pull <scope>]... [--push --owner <registry-owner>]
+                                [--description <text>]
+                                                      Same, for every member of a Keycloak group. Never pinned —
+                                                      it grants to the membership, not to one person.
+  agent-registry federation list                      List trust bindings (id, identity, pinned, grants)
   agent-registry federation remove <id>               Remove a trust binding
   agent-registry gc                                   Remove blobs not referenced by any manifest
   agent-registry help                                 Show this help
@@ -75,7 +103,16 @@ Environment:
   REGISTRY_PASSWORD       Used as the password when stdin is not a TTY
   REGISTRY_PUBLIC_URL     Public base URL (e.g. https://registry.agentics.dk). Arms the
                           Distribution token service + GitHub OIDC federation (ADR 0003)
-  REGISTRY_GH_OIDC_ISSUER Override the GitHub Actions OIDC issuer (tests/GHES)`)
+  REGISTRY_GH_OIDC_ISSUER Override the GitHub Actions OIDC issuer (tests/GHES)
+  REGISTRY_KEYCLOAK_ISSUER
+                          Realm URL (e.g. https://login.agentics.dk/realms/agentics). Arms
+                          interactive human sign-in — 'agent-registry login' (ADR 0004)
+  REGISTRY_KEYCLOAK_CLIENT_ID
+                          Public OAuth client the CLI signs in as (default agentics-cli)
+  REGISTRY_KEYCLOAK_AUDIENCE
+                          Audience the token must carry (default: the registry hostname)
+  REGISTRY_KEYCLOAK_SCOPES
+                          Scopes the CLI requests (default "openid offline_access registry")`)
 }
 
 func runOwner(adm Admin, args []string) int {

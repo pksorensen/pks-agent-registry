@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
+	"github.com/pksorensen/pks-agent-registry/internal/kcoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
 	"github.com/pksorensen/pks-agent-registry/internal/token"
 )
@@ -37,6 +38,33 @@ type Config struct {
 	TokenKid string
 	// OIDC validates GitHub Actions tokens against federated trust bindings.
 	OIDC *ghoidc.Validator
+	// Keycloak validates human sign-ins against federated trust bindings
+	// (ADR 0004). Nil when REGISTRY_KEYCLOAK_ISSUER is unset, which keeps the
+	// registry GitHub-and-password only.
+	Keycloak *kcoidc.Validator
+	// Login describes, to the CLI, how to obtain a Keycloak token for this
+	// registry. Projected into the RFC 9728 metadata document so no client has
+	// to hardcode an issuer, a client id or a scope set.
+	Login LoginDiscovery
+}
+
+// LoginDiscovery is the public description of this registry's interactive
+// sign-in, as configured. handleProtectedResourceMetadata projects it into the
+// RFC 9728 shape clients actually read. Every field is deliberately non-secret:
+// the CLI client is a public OAuth client and this document only saves the user
+// from configuring it.
+type LoginDiscovery struct {
+	// Issuer is the Keycloak realm URL.
+	Issuer string `json:"issuer"`
+	// ClientID is the public OAuth client the CLI authenticates as.
+	ClientID string `json:"client_id"`
+	// Audience the minted token must carry — this registry's hostname.
+	Audience string `json:"audience"`
+	// Scopes the CLI should request. offline_access is what makes the
+	// credential helper survive past the SSO idle timeout.
+	Scopes []string `json:"scopes"`
+	// Registry is the hostname docker knows this registry by.
+	Registry string `json:"registry"`
 }
 
 type Server struct {
@@ -92,6 +120,10 @@ func (s *Server) routes() {
 	// Distribution token service (ADR 0003). Registered unconditionally; the
 	// handler answers 501 until PublicURL/TokenKey arm the feature.
 	m.HandleFunc("GET /token", s.handleToken)
+
+	// Interactive sign-in discovery (ADR 0004, RFC 9728). Unauthenticated by
+	// design: a client cannot sign in until it knows where to sign in.
+	m.HandleFunc("GET "+wellKnownPRM, s.handleProtectedResourceMetadata)
 
 	// Management API — admin-token gated, designed for a future UI.
 	m.HandleFunc("GET /_mgmt/health", s.handleHealth)
@@ -194,6 +226,13 @@ func (s *Server) writeChallenges(w http.ResponseWriter, scope string) {
 		c := fmt.Sprintf("Bearer realm=%q,service=%q", s.cfg.PublicURL+"/token", s.service())
 		if scope != "" {
 			c += fmt.Sprintf(",scope=%q,error=%q", scope, "insufficient_scope")
+		}
+		// RFC 9728 §5.1. This is what lets a client that arrived by way of a
+		// bare `docker pull` find its way to a sign-in without being told the
+		// issuer up front — the whole discovery chain hangs off this one
+		// parameter, so it is advertised on every /v2/ challenge.
+		if s.cfg.Keycloak != nil && s.cfg.Login.Issuer != "" {
+			c += fmt.Sprintf(",resource_metadata=%q", s.prmURL())
 		}
 		w.Header().Add("WWW-Authenticate", c)
 	}

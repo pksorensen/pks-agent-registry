@@ -4,6 +4,8 @@ A minimal Go OCI container registry (Docker Registry V2 / OCI Distribution Spec)
 
 > **v0 scope**: Basic-auth, owner+repo tenancy, filesystem-backed storage under `USER_DATA_DIR`. Push/pull works with `docker`, `podman`, `skopeo`, `crane`. No TLS — terminate at a reverse proxy (Traefik, Caddy, nginx).
 
+Image push/pull stays the `docker` (or `podman`/`skopeo`/`crane`) CLI's job. What this binary adds on top is the server, the admin verbs, and — since [ADR 0004](docs/adr/0004-interactive-sign-in-and-docker-credential-helper.md) — signing a *person* in (`agent-registry login`) and answering Docker's credential-helper protocol on their behalf.
+
 ## Architecture
 
 Two surfaces, one binary, one volume:
@@ -34,6 +36,11 @@ The same binary is also an **admin CLI** — invoke any non-`serve` subcommand v
 | `REGISTRY_TRUSTED_PROXY_CIDRS` | (empty) | Comma-separated CIDRs. When the TCP source IP of a `GET`/`HEAD` request on `/v2/*` falls in one of these networks, the request is served without Basic-auth. Intended for reverse-proxied deployments where the proxy fronts a trusted private network (e.g. a Coolify/Traefik homelab bridge). Writes always require auth. Example: `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8`. |
 | `REGISTRY_PUBLIC_URL`  | (Coolify-derived) | Public base URL, e.g. `https://registry.agentics.dk`. Arms the Distribution token service + **GitHub OIDC federation** ([ADR 0003](docs/adr/0003-github-oidc-federated-auth.md)): `/v2/` 401s advertise a `Bearer realm="<url>/token"` challenge, `/token` mints 30-min registry tokens, and GitHub Actions workflows can `docker login -u oauth2 -p $GITHUB_OIDC_JWT` against configured trust bindings (`federation` CLI / `/_mgmt/federation`). Falls back to the Coolify-injected `COOLIFY_URL`, then `COOLIFY_FQDN` (first domain, `https://` assumed), so Coolify deployments arm it automatically. Unset everywhere = Basic-only (previous behavior). The hostname is the required OIDC token audience. |
 | `REGISTRY_GH_OIDC_ISSUER` | `https://token.actions.githubusercontent.com` | Override the accepted OIDC issuer (tests / GitHub Enterprise Server). |
+| `REGISTRY_KEYCLOAK_ISSUER` | `https://login.agentics.dk/realms/agentics` | Keycloak realm URL. Arms **interactive human sign-in** ([ADR 0004](docs/adr/0004-interactive-sign-in-and-docker-credential-helper.md)): `agent-registry login` mints a Keycloak token in the browser, and `/token` accepts it as a second credential type against `keycloak` trust bindings. Inheriting the default grants nobody anything without a trust binding. Set it to another realm to use one, or to `off` to disable interactive sign-in entirely. |
+| `REGISTRY_KEYCLOAK_CLIENT_ID` | `agent-registry-cli` | The public OAuth client the CLI signs in as, advertised to it in this registry's `/.well-known/oauth-protected-resource`. One client per tool, not one per house. Not a secret. |
+| `REGISTRY_KEYCLOAK_AUDIENCE` | (registry hostname) | The audience a Keycloak token must carry. A default Keycloak access token carries only `account`, and Keycloak ignores the RFC 8707 `resource` parameter, so the realm needs an audience mapper on the CLI's client for this value — `keycloak/reconcile-cli-client.mjs` adds it. Without it a token from any client in the realm would be replayable here. |
+| `REGISTRY_KEYCLOAK_ACCEPT_AZP` | (empty) | **Relaxes the check above.** Accepts a token whose `aud` omits this registry when its `azp` equals this client id. For a bare third-party realm where nobody can add a mapper. Off by default and logged loudly when on, because it accepts exactly the replay the audience exists to reject. |
+| `REGISTRY_KEYCLOAK_SCOPES` | `openid offline_access` | Scopes the CLI requests, advertised as `scopes_supported` in the metadata document so the resource decides, not the client. `offline_access` is what keeps the Docker credential helper working past Keycloak's SSO idle timeout. |
 
 ## Storage Layout
 
@@ -106,6 +113,121 @@ docker tag alpine:3.21 localhost:5000/pksorensen/alpine:3.21
 docker push localhost:5000/pksorensen/alpine:3.21
 ```
 
+## Signing in (people)
+
+`docker login` has no OAuth for third-party registries — the CLI takes a
+username and a password and nothing else. So the browser flow lives here
+instead, and Docker is reached through the one extension point it does have:
+a credential helper.
+
+```bash
+agent-registry login                    # defaults to registry.agentics.dk
+```
+
+That prints a URL, opens a browser if there is one, and waits for the callback
+on `127.0.0.1`. Nothing is transcribed — including inside a devcontainer or an
+editor's remote session, because the editor forwards the port, which is the same
+reason `gh auth login` works in there.
+
+When the callback genuinely cannot reach this machine — a raw SSH login, a tmux
+pane with no forwarding — the sign-in continues by itself with the OAuth 2.0
+**device grant** and prints a URL with the code already in it. `--device` picks
+that up front; `--browser` insists on the callback. See the house standard,
+**ADR 0010 — House CLI sign-in**, in the agentic-live-www workspace under
+`docs/adr/`.
+
+On success it offers to register itself as Docker's credential helper for that
+registry. Say yes and `docker pull` just works from then on: Docker asks
+`docker-credential-agentics` on **every** operation, and the helper hands back
+a freshly refreshed token. Nothing long-lived is written to
+`~/.docker/config.json`.
+
+```bash
+agent-registry whoami                   # who am I, and does docker know?
+agent-registry token                    # print a fresh token (for scripts/CI)
+agent-registry logout                   # end the session, forget the credential
+agent-registry credential-helper install|uninstall|status [<registry>]
+```
+
+Without the helper, a one-off login that lasts until the token expires:
+
+```bash
+docker login registry.agentics.dk -u oauth2 -p "$(agent-registry token)"
+```
+
+Credentials live in `~/.config/agent-registry/credentials.json` (mode `0600`).
+The `credHelpers` entry the installer writes is **per-registry**, so it sits
+beside a global `credsStore` — including the VS Code dev-containers helper that
+rewrites `credsStore` on reconnect — without either one fighting the other.
+
+Access is granted by a trust binding, not by an owner account:
+
+```bash
+agent-registry federation add-user poul --pull 'agentics/*'
+agent-registry federation add-group developers --pull 'agentics/*'
+```
+
+A username binding pins to that person's Keycloak subject on first use (TOFU),
+so a later username change cannot hand it to someone else. A group binding is
+never pinned — it grants to the membership. Both need
+`REGISTRY_KEYCLOAK_ISSUER` set on the server — it defaults to the Agentics
+realm — and group bindings need a group-membership mapper on the
+`agent-registry-cli` client, which the reconcile script below adds.
+
+### Arming it on a realm
+
+One script, then the first grant. The script is needed because a realm import
+only runs when the realm is *created* — editing `agentics-realm.json` does not
+change a realm that already exists, which is how the device grant came to be
+switched off in production while the JSON said it was on.
+
+It lives in the **agentic-live-www** workspace under `keycloak/`, not in this
+repository — this registry is one consumer of that realm, not its owner. It is
+idempotent, and everything it does can also be clicked in the Keycloak console.
+
+```bash
+# 1. create/reconcile this CLI's own public client
+KEYCLOAK_URL=https://login.agentics.dk KC_BOOTSTRAP_ADMIN_PASSWORD=... \
+  node keycloak/reconcile-cli-client.mjs \
+    --client-id agent-registry-cli \
+    --audience registry.agentics.dk
+
+# 2. arm the registry, then grant someone access
+#    (REGISTRY_KEYCLOAK_ISSUER already defaults to the Agentics realm)
+agent-registry federation add-user poul --pull 'agentics/*'
+```
+
+One pass reconciles the loopback redirect URIs (`http://127.0.0.1:*` and
+`http://localhost:*`), PKCE `S256`, the device grant, an audience mapper on the
+client's *dedicated* mappers so every token it mints carries
+`aud: registry.agentics.dk`, and a group-membership mapper so `groups` reaches
+the token at all — without that one, group trust bindings silently never match.
+Each CLI gets its own client, so the next one is another invocation of the same
+script rather than another script.
+
+Check it without an admin password. A reconciled client returns a
+`device_code` and a `verification_uri_complete`; one that does not exist yet
+returns `invalid_client`/`unauthorized_client`:
+
+```bash
+curl -s -X POST \
+  https://login.agentics.dk/realms/agentics/protocol/openid-connect/auth/device \
+  -d client_id=agent-registry-cli -d 'scope=openid offline_access' \
+  -d code_challenge_method=S256 \
+  -d code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+```
+
+The PKCE parameters are not optional here even though RFC 8628 says nothing
+about them: the client enforces `S256`, so Keycloak rejects a device request
+without a challenge (`Missing parameter: code_challenge_method`). The value
+above is the fixed example challenge from RFC 7636 — fine for a liveness probe,
+since nothing exchanges the code.
+
+Full design in [ADR 0004](docs/adr/0004-interactive-sign-in-and-docker-credential-helper.md)
+— amended by the house standard, **ADR 0010 — House CLI sign-in**, in the
+agentic-live-www workspace under `docs/adr/`, which is where the flow, the
+`client_id` extension and the audience mechanism are worked through.
+
 ## Admin CLI
 
 The CLI runs in one of two modes:
@@ -177,7 +299,9 @@ The future web UI in `agentic-live-www` will consume this API.
 - **OCI v2** uses HTTP Basic against the owner credentials. Reads (GET/HEAD) require any valid owner; writes (PUT/POST/PATCH/DELETE) additionally require the path's `<owner>` segment to match the authenticated user.
 - **Management API** uses a single Bearer admin token from `REGISTRY_ADMIN_TOKEN`. The CLI bypasses this entirely by operating on the filesystem directly.
 
-Bearer/scope-based OAuth (per-repo, per-action tokens) is out of scope for v0 — Basic is what the OCI Distribution Spec explicitly allows, and is what every client supports. ([Token spec](https://distribution.github.io/distribution/spec/auth/token/) is the future upgrade path.)
+- **Federated identities** authenticate with a JWT presented as the Basic password at `GET /token`, matched against a trust binding. Two issuers are accepted: GitHub Actions ([ADR 0003](docs/adr/0003-github-oidc-federated-auth.md)) and Keycloak ([ADR 0004](docs/adr/0004-interactive-sign-in-and-docker-credential-helper.md)). The token realm itself stays ours — Keycloak is a credential type, not the realm.
+
+When `REGISTRY_PUBLIC_URL` is set, `/v2/` 401s also advertise a `Bearer realm="<url>/token"` challenge and `/token` mints 30-minute, scope-limited registry tokens. Enforcement of those is stateless, so revoking access takes effect at token expiry.
 
 ## Deployment
 
