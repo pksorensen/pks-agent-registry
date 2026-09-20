@@ -12,8 +12,8 @@ zone already creates a stable user-assigned managed identity.
 
 ## Decision
 
-The registry accepts Microsoft Entra access tokens as a third federated
-credential type when `REGISTRY_AZURE_OIDC_AUDIENCE` is configured. An
+The registry accepts Microsoft Entra managed-identity assertions as a third
+federated credential type when `REGISTRY_AZURE_OIDC_AUDIENCE` is configured. An
 administrator must first create an `azure` trust binding containing all three
 immutable identifiers:
 
@@ -26,7 +26,15 @@ keys, validates its exact tenant-specific issuer and audience, and then requires
 all three claims to match the binding. Azure access is pull-only unless the
 binding explicitly grants an owner namespace and push permission.
 
-The access token is supplied as the Basic password with username `oauth2`, the
+The recommended audience is `api://AzureADTokenExchange`: it is the standard
+audience for short-lived Entra workload-federation assertions and is available
+to managed identities across tenants without provisioning a service principal
+for a custom resource application in every customer tenant. The registry acts
+as the relying token service: it never forwards the assertion to Azure and only
+mints an OCI token after matching the explicitly approved immutable claims. A
+private registry deployment may instead use its own Application ID URI.
+
+The assertion is supplied as the Basic password with username `oauth2`, the
 same convention used for GitHub workload tokens. The registry then returns its
 normal short-lived OCI bearer token.
 
@@ -38,5 +46,5 @@ normal short-lived OCI bearer token.
   scoped Entra token for the configured registry audience.
 - The Agentics control plane can associate the binding with a customer
   installation and revoke future pulls by deleting it.
-- The Entra resource application must be multi-tenant and consented in the
-  customer's tenant before its managed identity can request the audience.
+- The assertion is audience-bound to Entra workload federation and cannot be
+  reused as an ARM, Foundry, or customer-resource access token.
