@@ -154,7 +154,8 @@ func main() {
 		cfg.TokenKey = key
 		cfg.TokenKid = kid
 		cfg.OIDC = ghoidc.New(getEnv("REGISTRY_GH_OIDC_ISSUER", ghoidc.DefaultIssuer), audience)
-		if azureAudience := strings.TrimSpace(os.Getenv("REGISTRY_AZURE_OIDC_AUDIENCE")); azureAudience != "" {
+		azureAudience := strings.TrimSpace(getEnv("REGISTRY_AZURE_OIDC_AUDIENCE", "api://AzureADTokenExchange"))
+		if azureAudience != "" && !strings.EqualFold(azureAudience, "off") {
 			cfg.Azure = azoidc.New(azureAudience)
 		}
 
