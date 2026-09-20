@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.2...agent-registry-v1.5.0) (2026-09-20)
+
+
+### Features
+
+* **auth:** enable Azure federation by default ([c89101c](https://github.com/pksorensen/pks-agent-registry/commit/c89101c5e8df4c9877178776372e503e6adc244b))
+* **auth:** support Azure managed identity federation ([d756a19](https://github.com/pksorensen/pks-agent-registry/commit/d756a19028825bde054d750d3e30f0c50bc75381))
+* **login:** sign in with a browser and hand Docker the credential ([7bc7962](https://github.com/pksorensen/pks-agent-registry/commit/7bc796290f87fa700fc161c8bb80c9615d5e4328))
+
 ## [1.4.2](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.1...agent-registry-v1.4.2) (2026-07-02)
 
 
