@@ -10,7 +10,7 @@ import (
 
 const (
 	tenantID = "11111111-2222-3333-4444-555555555555"
-	audience = "api://registry.agentics.dk"
+	audience = "fb60f99c-7a34-4190-8149-302f77469936"
 )
 
 func TestManagedIdentityToken(t *testing.T) {
@@ -33,6 +33,29 @@ func TestManagedIdentityToken(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 	if claims.TenantID != tenantID || claims.EffectiveClientID() != "ffffffff-1111-2222-3333-444444444444" {
+		t.Fatalf("unexpected claims: %+v", claims)
+	}
+}
+
+func TestManagedIdentityV2TokenUsesAuthorizedPartyClientID(t *testing.T) {
+	issuer := ghoidctest.New(t)
+	validator := azoidc.New(audience)
+	validator.JWKSURL = issuer.JWKSURL
+	raw := issuer.Mint(t, ghoidctest.TokenOpts{
+		Audience: audience,
+		Issuer:   "https://login.microsoftonline.com/" + tenantID + "/v2.0",
+		Extra: map[string]any{
+			"tid": tenantID,
+			"oid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			"azp": "ffffffff-1111-2222-3333-444444444444",
+		},
+	})
+
+	claims, err := validator.Validate(raw, time.Now())
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if claims.EffectiveClientID() != "ffffffff-1111-2222-3333-444444444444" {
 		t.Fatalf("unexpected claims: %+v", claims)
 	}
 }

@@ -22,7 +22,7 @@ func newAzureTokenServer(t *testing.T) (*Server, *store.Store, *ghoidctest.Issue
 		t.Fatalf("LoadOrCreateSigningKey: %v", err)
 	}
 	issuer := ghoidctest.New(t)
-	azure := azoidc.New("api://registry.agentics.dk")
+	azure := azoidc.New("fb60f99c-7a34-4190-8149-302f77469936")
 	azure.JWKSURL = issuer.JWKSURL
 	return New(Config{
 		Addr: ":0", AdminToken: "admin-secret", Store: st,
@@ -45,9 +45,9 @@ func TestTokenAzureManagedIdentityPullFlow(t *testing.T) {
 	}
 	seedRepo(t, st, "agentics", "agentics-www")
 	raw := issuer.Mint(t, ghoidctest.TokenOpts{
-		Audience: "api://registry.agentics.dk",
-		Issuer:   "https://sts.windows.net/" + tenantID + "/",
-		Extra:    map[string]any{"tid": tenantID, "oid": objectID, "appid": clientID},
+		Audience: "fb60f99c-7a34-4190-8149-302f77469936",
+		Issuer:   "https://login.microsoftonline.com/" + tenantID + "/v2.0",
+		Extra:    map[string]any{"tid": tenantID, "oid": objectID, "azp": clientID},
 	})
 	rec, response := fetchToken(t, s, "oauth2", raw, "repository:agentics/agentics-www:pull")
 	if response == nil {
