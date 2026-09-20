@@ -154,7 +154,9 @@ func main() {
 		cfg.TokenKey = key
 		cfg.TokenKid = kid
 		cfg.OIDC = ghoidc.New(getEnv("REGISTRY_GH_OIDC_ISSUER", ghoidc.DefaultIssuer), audience)
-		azureAudience := strings.TrimSpace(getEnv("REGISTRY_AZURE_OIDC_AUDIENCE", "api://AzureADTokenExchange"))
+		// Azure accepts api://AzureADTokenExchange as the requested resource but
+		// emits the backing first-party application ID in the signed aud claim.
+		azureAudience := strings.TrimSpace(getEnv("REGISTRY_AZURE_OIDC_AUDIENCE", "fb60f99c-7a34-4190-8149-302f77469936"))
 		if azureAudience != "" && !strings.EqualFold(azureAudience, "off") {
 			cfg.Azure = azoidc.New(azureAudience)
 		}

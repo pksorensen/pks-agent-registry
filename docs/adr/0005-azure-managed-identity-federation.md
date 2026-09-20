@@ -26,8 +26,11 @@ keys, validates its exact tenant-specific issuer and audience, and then requires
 all three claims to match the binding. Azure access is pull-only unless the
 binding explicitly grants an owner namespace and push permission.
 
-The recommended audience is `api://AzureADTokenExchange`: it is the standard
-audience for short-lived Entra workload-federation assertions and is available
+The managed identity requests `api://AzureADTokenExchange`; Entra emits its
+backing first-party application ID (`fb60f99c-7a34-4190-8149-302f77469936`) in
+the signed `aud` claim, which is therefore the registry's default validation
+audience. It is the standard audience for short-lived workload-federation
+assertions and is available
 to managed identities across tenants without provisioning a service principal
 for a custom resource application in every customer tenant. The registry acts
 as the relying token service: it never forwards the assertion to Azure and only
