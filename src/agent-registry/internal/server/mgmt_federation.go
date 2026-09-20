@@ -41,6 +41,9 @@ type bindingCreateReq struct {
 	Environment       string   `json:"environment,omitempty"`
 	Username          string   `json:"username,omitempty"`
 	Group             string   `json:"group,omitempty"`
+	TenantID          string   `json:"tenantId,omitempty"`
+	ClientID          string   `json:"clientId,omitempty"`
+	ObjectID          string   `json:"objectId,omitempty"`
 	Owner             string   `json:"owner,omitempty"`
 	Push              bool     `json:"push"`
 	PullScopes        []string `json:"pullScopes,omitempty"`
@@ -73,6 +76,16 @@ func (s *Server) handleMgmtFederationCreate(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		issuer = s.cfg.Keycloak.IssuerURL
+	case store.KindAzure:
+		if s.cfg.Azure == nil {
+			http.Error(w, "Azure workload federation is not configured (REGISTRY_AZURE_OIDC_AUDIENCE unset)", http.StatusBadRequest)
+			return
+		}
+		if req.TenantID == "" || req.ClientID == "" || req.ObjectID == "" {
+			http.Error(w, "tenantId, clientId and objectId required", http.StatusBadRequest)
+			return
+		}
+		issuer = "https://sts.windows.net/" + req.TenantID + "/"
 	default:
 		http.Error(w, "unknown binding kind", http.StatusBadRequest)
 		return
@@ -97,6 +110,9 @@ func (s *Server) handleMgmtFederationCreate(w http.ResponseWriter, r *http.Reque
 		Environment:       req.Environment,
 		Username:          req.Username,
 		Group:             req.Group,
+		TenantID:          req.TenantID,
+		ClientID:          req.ClientID,
+		ObjectID:          req.ObjectID,
 		Owner:             req.Owner,
 		Permissions:       &store.Permissions{Push: req.Push, PullScopes: req.PullScopes},
 		CreatedBy:         req.CreatedBy,

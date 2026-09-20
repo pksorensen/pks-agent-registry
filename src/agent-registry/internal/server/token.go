@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pksorensen/pks-agent-registry/internal/azoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/oidc"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
 	"github.com/pksorensen/pks-agent-registry/internal/token"
@@ -59,6 +60,8 @@ func (s *Server) resolvePrincipal(user, pass string) (*principal, bool) {
 		switch iss := oidc.UnverifiedIssuer(pass); {
 		case s.cfg.Keycloak != nil && iss == s.cfg.Keycloak.IssuerURL:
 			return s.resolveKeycloak(pass)
+		case s.cfg.Azure != nil && azoidc.IsIssuer(iss):
+			return s.resolveAzure(pass)
 		case s.cfg.OIDC != nil:
 			return s.resolveFederated(pass)
 		}
@@ -71,6 +74,32 @@ func (s *Server) resolvePrincipal(user, pass string) (*principal, bool) {
 		return nil, false
 	}
 	return &principal{sub: o.Name, ownerNS: o.Name, perms: o.Permissions}, true
+}
+
+func (s *Server) resolveAzure(rawJWT string) (*principal, bool) {
+	claims, err := s.cfg.Azure.Validate(rawJWT, time.Now())
+	if err != nil {
+		log.Printf("federation: azure token rejected: %v", err)
+		return nil, false
+	}
+	bindings, err := s.cfg.Store.ListTrustBindings()
+	if err != nil {
+		log.Printf("federation: list bindings: %v", err)
+		return nil, false
+	}
+	for _, b := range bindings {
+		if !b.MatchesAzure(claims.TenantID, claims.EffectiveClientID(), claims.ObjectID) {
+			continue
+		}
+		perms := b.Permissions
+		if perms == nil {
+			perms = &store.Permissions{}
+		}
+		log.Printf("federation: authenticated %s (binding %s)", claims.Identity(), b.ID)
+		return &principal{sub: claims.Identity(), ownerNS: b.Owner, perms: perms}, true
+	}
+	log.Printf("federation: no trust binding matches azure tenant=%q client=%q object=%q", claims.TenantID, claims.EffectiveClientID(), claims.ObjectID)
+	return nil, false
 }
 
 func (s *Server) resolveFederated(rawJWT string) (*principal, bool) {

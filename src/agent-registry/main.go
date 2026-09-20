@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pksorensen/pks-agent-registry/internal/azoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/cli"
 	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/kcoidc"
@@ -153,6 +154,9 @@ func main() {
 		cfg.TokenKey = key
 		cfg.TokenKid = kid
 		cfg.OIDC = ghoidc.New(getEnv("REGISTRY_GH_OIDC_ISSUER", ghoidc.DefaultIssuer), audience)
+		if azureAudience := strings.TrimSpace(os.Getenv("REGISTRY_AZURE_OIDC_AUDIENCE")); azureAudience != "" {
+			cfg.Azure = azoidc.New(azureAudience)
+		}
 
 		// Interactive human sign-in (ADR 0004): `agent-registry login` mints a
 		// Keycloak token, and the registry accepts it as a second credential
@@ -189,7 +193,7 @@ func main() {
 
 	srv := server.New(cfg)
 
-	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d, token-auth=%t, keycloak-login=%t)", addr, dataDir, adminToken != "", len(trustedCIDRs), cfg.PublicURL != "", cfg.Keycloak != nil)
+	log.Printf("agent-registry listening on %s (data=%s, admin-api=%t, trusted-proxy-cidrs=%d, token-auth=%t, keycloak-login=%t, azure-federation=%t)", addr, dataDir, adminToken != "", len(trustedCIDRs), cfg.PublicURL != "", cfg.Keycloak != nil, cfg.Azure != nil)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

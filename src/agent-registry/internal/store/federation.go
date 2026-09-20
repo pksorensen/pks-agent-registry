@@ -15,6 +15,7 @@ import (
 const (
 	KindGitHub   = "github"
 	KindKeycloak = "keycloak"
+	KindAzure    = "azure"
 )
 
 // TrustBinding is a federated-identity trust rule: an external identity that
@@ -66,6 +67,14 @@ type TrustBinding struct {
 	// deliberately open to whoever is in the group.
 	Subject string `json:"subject,omitempty"`
 
+	// --- KindAzure ---
+
+	// TenantID, ClientID and ObjectID pin an Azure managed identity to its
+	// immutable Entra service principal. All three must match the signed token.
+	TenantID string `json:"tenantId,omitempty"`
+	ClientID string `json:"clientId,omitempty"`
+	ObjectID string `json:"objectId,omitempty"`
+
 	// Owner is the registry namespace the federated identity acts as.
 	// Required when Permissions.Push is set (writes are namespace-bound);
 	// empty for pull-only bindings.
@@ -87,6 +96,9 @@ func (b *TrustBinding) KindOf() string {
 // A group binding has nothing to pin and reports false forever, which is
 // correct: it grants to a membership, not to one person.
 func (b *TrustBinding) Pinned() bool {
+	if b.KindOf() == KindAzure {
+		return b.TenantID != "" && b.ClientID != "" && b.ObjectID != ""
+	}
 	if b.KindOf() == KindKeycloak {
 		return b.Subject != ""
 	}
@@ -95,10 +107,20 @@ func (b *TrustBinding) Pinned() bool {
 
 // Pinnable reports whether a first successful login should pin this binding.
 func (b *TrustBinding) Pinnable() bool {
+	if b.KindOf() == KindAzure {
+		return false
+	}
 	if b.KindOf() == KindKeycloak {
 		return b.Username != ""
 	}
 	return true
+}
+
+func (b *TrustBinding) MatchesAzure(tenantID, clientID, objectID string) bool {
+	return b.KindOf() == KindAzure &&
+		strings.EqualFold(b.TenantID, tenantID) &&
+		strings.EqualFold(b.ClientID, clientID) &&
+		strings.EqualFold(b.ObjectID, objectID)
 }
 
 // Matches reports whether validated GitHub token claims satisfy this binding.
@@ -151,11 +173,17 @@ func (b *TrustBinding) MatchesUser(subject, username string, hasGroup func(strin
 // the *person* who authenticated, not the binding, so their name is built from
 // the token claims instead.
 func (b *TrustBinding) PrincipalName() string {
+	if b.KindOf() == KindAzure {
+		return "azure:" + strings.ToLower(b.ObjectID)
+	}
 	return "fed:" + strings.ToLower(b.Repository)
 }
 
 // Label is the human-readable identity a binding grants to, for listings.
 func (b *TrustBinding) Label() string {
+	if b.KindOf() == KindAzure {
+		return "azure:" + b.ClientID
+	}
 	if b.KindOf() == KindKeycloak {
 		if b.Group != "" {
 			return "group:" + b.Group
@@ -196,6 +224,10 @@ func (s *Store) CreateTrustBinding(b *TrustBinding) (*TrustBinding, error) {
 	case KindKeycloak:
 		if (b.Username == "") == (b.Group == "") {
 			return nil, errors.New("a keycloak binding needs exactly one of username or group")
+		}
+	case KindAzure:
+		if b.TenantID == "" || b.ClientID == "" || b.ObjectID == "" {
+			return nil, errors.New("an azure binding needs tenantId, clientId and objectId")
 		}
 	default:
 		return nil, errors.New("unknown trust binding kind " + b.Kind)

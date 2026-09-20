@@ -77,6 +77,7 @@ type TokenOpts struct {
 	Kid               string    // defaults to issuer kid
 	Alg               string    // defaults to RS256
 	Issuer            string    // defaults to the fake issuer URL
+	Extra             map[string]any
 }
 
 // Mint signs a GitHub-shaped OIDC token.
@@ -118,6 +119,9 @@ func (i *Issuer) Mint(t *testing.T, o TokenOpts) string {
 	}
 	if o.Environment != "" {
 		claims["environment"] = o.Environment
+	}
+	for key, value := range o.Extra {
+		claims[key] = value
 	}
 	headerJSON, _ := json.Marshal(map[string]string{"alg": o.Alg, "typ": "JWT", "kid": o.Kid})
 	claimsJSON, _ := json.Marshal(claims)

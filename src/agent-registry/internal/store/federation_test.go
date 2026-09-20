@@ -82,6 +82,24 @@ func TestTrustBindingValidation(t *testing.T) {
 	}
 }
 
+func TestAzureTrustBindingMatching(t *testing.T) {
+	b := TrustBinding{
+		Kind:     KindAzure,
+		TenantID: "11111111-2222-3333-4444-555555555555",
+		ClientID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		ObjectID: "ffffffff-1111-2222-3333-444444444444",
+	}
+	if !b.MatchesAzure(b.TenantID, b.ClientID, b.ObjectID) {
+		t.Fatal("expected exact Azure identity to match")
+	}
+	if b.MatchesAzure(b.TenantID, b.ClientID, "00000000-0000-0000-0000-000000000000") {
+		t.Fatal("different object ID must not match")
+	}
+	if !b.Pinned() || b.Pinnable() {
+		t.Fatal("Azure identities must be immutable and never TOFU-pinned")
+	}
+}
+
 func TestTrustBindingMatching(t *testing.T) {
 	cases := []struct {
 		name    string

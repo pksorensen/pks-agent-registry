@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pksorensen/pks-agent-registry/internal/azoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/ghoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/kcoidc"
 	"github.com/pksorensen/pks-agent-registry/internal/store"
@@ -42,6 +43,9 @@ type Config struct {
 	// (ADR 0004). Nil when REGISTRY_KEYCLOAK_ISSUER is unset, which keeps the
 	// registry GitHub-and-password only.
 	Keycloak *kcoidc.Validator
+	// Azure validates Microsoft Entra access tokens from customer-managed
+	// identities. Nil keeps Azure workload federation disabled.
+	Azure *azoidc.Validator
 	// Login describes, to the CLI, how to obtain a Keycloak token for this
 	// registry. Projected into the RFC 9728 metadata document so no client has
 	// to hardcode an issuer, a client id or a scope set.
