@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.5.0...agent-registry-v1.5.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **auth:** validate Azure token exchange audience ([556eae4](https://github.com/pksorensen/pks-agent-registry/commit/556eae439d072ef65f36bebd4e4902e6cdf65efa))
+
 ## [1.5.0](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.4.2...agent-registry-v1.5.0) (2026-09-20)
 
 
