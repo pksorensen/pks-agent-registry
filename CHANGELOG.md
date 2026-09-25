@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.5.2...agent-registry-v1.5.3) (2026-09-25)
+
+
+### Bug Fixes
+
+* **registry:** serialize resumable upload state ([#16](https://github.com/pksorensen/pks-agent-registry/issues/16)) ([ed7f33f](https://github.com/pksorensen/pks-agent-registry/commit/ed7f33fb831a79f8fea56d1283df5055c19d50f3))
+
 ## [1.5.2](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.5.1...agent-registry-v1.5.2) (2026-09-25)
 
 
