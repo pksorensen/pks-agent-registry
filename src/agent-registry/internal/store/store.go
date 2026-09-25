@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -28,7 +29,8 @@ var (
 )
 
 type Store struct {
-	DataDir string
+	DataDir     string
+	uploadLocks [256]sync.Mutex
 }
 
 func New(dataDir string) (*Store, error) {
@@ -345,6 +347,17 @@ func (s *Store) uploadDigestPath(id string) string {
 	return filepath.Join(s.DataDir, "uploads", id+".sha256")
 }
 
+// lockUpload serializes mutations for one upload session. Docker clients may
+// overlap PATCH retries when a proxy response is delayed; without this guard,
+// both requests can restore the same digest state and the last sidecar write
+// wins even though both bodies were appended to the upload file.
+func (s *Store) lockUpload(id string) func() {
+	sum := sha256.Sum256([]byte(id))
+	mu := &s.uploadLocks[sum[0]]
+	mu.Lock()
+	return mu.Unlock
+}
+
 type uploadDigestState struct {
 	Size  int64  `json:"size"`
 	State []byte `json:"state"`
@@ -426,6 +439,9 @@ func (s *Store) UploadSize(id string) (int64, error) {
 }
 
 func (s *Store) AppendUpload(id string, r io.Reader) (int64, error) {
+	unlock := s.lockUpload(id)
+	defer unlock()
+
 	f, err := os.OpenFile(s.uploadPath(id), os.O_WRONLY|os.O_APPEND, 0o644)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, ErrNotFound
@@ -462,6 +478,9 @@ func (s *Store) FinalizeUpload(id, expectedDigest string) error {
 	if !ValidDigest(expectedDigest) {
 		return ErrInvalidName
 	}
+	unlock := s.lockUpload(id)
+	defer unlock()
+
 	src := s.uploadPath(id)
 	st, err := os.Stat(src)
 	if errors.Is(err, os.ErrNotExist) {
@@ -490,6 +509,9 @@ func (s *Store) FinalizeUpload(id, expectedDigest string) error {
 }
 
 func (s *Store) AbortUpload(id string) error {
+	unlock := s.lockUpload(id)
+	defer unlock()
+
 	err := os.Remove(s.uploadPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
