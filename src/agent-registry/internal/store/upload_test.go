@@ -55,7 +55,6 @@ func TestUploadDigestRecoversWhenSidecarIsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
 func TestUploadDigestMatchesConcurrentAppends(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
