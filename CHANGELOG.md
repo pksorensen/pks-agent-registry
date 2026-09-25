@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.5.1...agent-registry-v1.5.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **registry:** finalize large uploads without rehashing blobs ([#14](https://github.com/pksorensen/pks-agent-registry/issues/14)) ([f09c014](https://github.com/pksorensen/pks-agent-registry/commit/f09c014667f695cedd1d27609b075874ebe57149))
+
 ## [1.5.1](https://github.com/pksorensen/pks-agent-registry/compare/agent-registry-v1.5.0...agent-registry-v1.5.1) (2026-09-20)
 
 
