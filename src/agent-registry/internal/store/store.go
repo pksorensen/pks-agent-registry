@@ -3,10 +3,12 @@ package store
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path"
@@ -339,6 +341,62 @@ func (s *Store) uploadPath(id string) string {
 	return filepath.Join(s.DataDir, "uploads", id)
 }
 
+func (s *Store) uploadDigestPath(id string) string {
+	return filepath.Join(s.DataDir, "uploads", id+".sha256")
+}
+
+type uploadDigestState struct {
+	Size  int64  `json:"size"`
+	State []byte `json:"state"`
+}
+
+type resumableHash interface {
+	hash.Hash
+	encoding.BinaryMarshaler
+	encoding.BinaryUnmarshaler
+}
+
+func newUploadDigest() resumableHash {
+	return sha256.New().(resumableHash)
+}
+
+func (s *Store) saveUploadDigest(id string, size int64, h resumableHash) error {
+	state, err := h.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(uploadDigestState{Size: size, State: state})
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(s.uploadDigestPath(id), body, 0o600)
+}
+
+// uploadDigest restores the incremental SHA-256 state saved after each PATCH.
+// Older or interrupted uploads fall back to one full read, after which future
+// finalization remains constant-time even for multi-gigabyte image layers.
+func (s *Store) uploadDigest(id string, size int64) (resumableHash, error) {
+	h := newUploadDigest()
+	if body, err := os.ReadFile(s.uploadDigestPath(id)); err == nil {
+		var saved uploadDigestState
+		if json.Unmarshal(body, &saved) == nil && saved.Size == size {
+			if h.UnmarshalBinary(saved.State) == nil {
+				return h, nil
+			}
+		}
+	}
+
+	f, err := os.Open(s.uploadPath(id))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
 func (s *Store) StartUpload() (string, error) {
 	id, err := randomID()
 	if err != nil {
@@ -349,6 +407,10 @@ func (s *Store) StartUpload() (string, error) {
 		return "", err
 	}
 	f.Close()
+	if err := s.saveUploadDigest(id, 0, newUploadDigest()); err != nil {
+		_ = os.Remove(s.uploadPath(id))
+		return "", err
+	}
 	return id, nil
 }
 
@@ -372,37 +434,46 @@ func (s *Store) AppendUpload(id string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, r); err != nil {
-		return 0, err
-	}
 	st, err := f.Stat()
 	if err != nil {
+		return 0, err
+	}
+	h, err := s.uploadDigest(id, st.Size())
+	if err != nil {
+		return 0, err
+	}
+	if _, err := io.Copy(io.MultiWriter(f, h), r); err != nil {
+		return 0, err
+	}
+	st, err = f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if err := s.saveUploadDigest(id, st.Size(), h); err != nil {
 		return 0, err
 	}
 	return st.Size(), nil
 }
 
-// FinalizeUpload hashes the upload, verifies it matches expectedDigest, and
-// moves it into content-addressed blob storage. The upload session is removed
-// on success.
+// FinalizeUpload verifies the incrementally computed digest and moves the
+// upload into content-addressed blob storage. The upload session is removed on
+// success.
 func (s *Store) FinalizeUpload(id, expectedDigest string) error {
 	if !ValidDigest(expectedDigest) {
 		return ErrInvalidName
 	}
 	src := s.uploadPath(id)
-	f, err := os.Open(src)
+	st, err := os.Stat(src)
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		f.Close()
+	h, err := s.uploadDigest(id, st.Size())
+	if err != nil {
 		return err
 	}
-	f.Close()
 	got := "sha256:" + hex.EncodeToString(h.Sum(nil))
 	if got != expectedDigest {
 		return fmt.Errorf("%w: got %s, expected %s", ErrDigestMismatch, got, expectedDigest)
@@ -414,6 +485,7 @@ func (s *Store) FinalizeUpload(id, expectedDigest string) error {
 	if err := os.Rename(src, dst); err != nil {
 		return err
 	}
+	_ = os.Remove(s.uploadDigestPath(id))
 	return nil
 }
 
@@ -422,6 +494,7 @@ func (s *Store) AbortUpload(id string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
+	_ = os.Remove(s.uploadDigestPath(id))
 	return err
 }
 
